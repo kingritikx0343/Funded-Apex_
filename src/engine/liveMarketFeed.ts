@@ -1,4 +1,4 @@
-import { INSTRUMENTS, MarketQuote, roundPrice, SymbolCode } from './tradingEngine';
+import { getMarketStatus, INSTRUMENTS, MarketQuote, roundPrice, SymbolCode } from './tradingEngine';
 
 export interface LiveCandle {
   time: number;
@@ -312,14 +312,32 @@ export async function fetchInitialLiveQuotes(
                 if (sym === 'XAUUSD') {
                   authoritativeXauSpotBid = bid;
                 }
+                const change24hPct =
+                  typeof sq.change24hPct === 'number' && Number.isFinite(sq.change24hPct)
+                    ? sq.change24hPct
+                    : currentQuotes[sym]?.change24hPct ?? 0;
+                const high24h = roundPrice(
+                  Math.max(
+                    bid,
+                    Number(sq.high24h) > 0 ? Number(sq.high24h) : currentQuotes[sym]?.high24h || bid
+                  ),
+                  sym
+                );
+                const low24h = roundPrice(
+                  Math.min(
+                    bid,
+                    Number(sq.low24h) > 0 ? Number(sq.low24h) : currentQuotes[sym]?.low24h || bid
+                  ),
+                  sym
+                );
                 updates[sym] = {
                   symbol: sym,
                   bid,
                   ask,
                   last: roundPrice((bid + ask) / 2, sym),
-                  change24hPct: currentQuotes[sym]?.change24hPct ?? (sym === 'XAUUSD' ? 0.84 : 0.25),
-                  high24h: roundPrice(Math.max(bid * 1.005, currentQuotes[sym]?.high24h || bid), sym),
-                  low24h: roundPrice(Math.min(bid * 0.995, currentQuotes[sym]?.low24h || bid), sym),
+                  change24hPct,
+                  high24h,
+                  low24h,
                   timestamp: Date.now(),
                 };
                 spotBboLoaded = true;
@@ -511,7 +529,24 @@ export function buildSpotAnchoredCandles(
 
   const candles: LiveCandle[] = [];
   const tfSeconds = getTimeframeSeconds(norm);
-  const nowBucket = Math.floor(Date.now() / (tfSeconds * 1000)) * (tfSeconds * 1000);
+  const marketStatus = getMarketStatus(symbol);
+  let referenceMs = Date.now();
+  if (!marketStatus.isOpen) {
+    // Anchor fallback candles for weekend-closed markets to the most recent Friday 22:00 UTC market close
+    const d = new Date(referenceMs);
+    const utcDay = d.getUTCDay();
+    const daysSinceFri = utcDay === 6 ? 1 : utcDay === 0 ? 2 : 0;
+    const friCloseMs = Date.UTC(
+      d.getUTCFullYear(),
+      d.getUTCMonth(),
+      d.getUTCDate() - daysSinceFri,
+      21,
+      59,
+      0
+    );
+    referenceMs = Math.min(referenceMs, friCloseMs);
+  }
+  const nowBucket = Math.floor(referenceMs / (tfSeconds * 1000)) * (tfSeconds * 1000);
 
   const symSeed =
     symbol.charCodeAt(0) * 31 +
@@ -643,15 +678,188 @@ export function alignCandlesToSpot(
 }
 
 /**
+ * Synchronizes candle timestamps to the current real-time timeframe bucket when the market is open,
+ * eliminating any 1–15 candle lag from delayed upstream futures/FX feeds (e.g. Yahoo Finance GC=F / NQ=F / FX).
+ */
+export function synchronizeCandlesToRealtimeBucket(
+  candles: LiveCandle[],
+  symbol: SymbolCode,
+  intervalLabel?: string,
+  nowMs: number = Date.now()
+): LiveCandle[] {
+  if (!Array.isArray(candles) || candles.length === 0) return candles;
+  if (!getMarketStatus(symbol, nowMs).isOpen) return candles;
+
+  let stepSec = 0;
+  if (intervalLabel) {
+    stepSec = getTimeframeSeconds(intervalLabel) || 0;
+  }
+  if (!stepSec && candles.length >= 2) {
+    const tLast = candles[candles.length - 1].time;
+    const tPrev = candles[candles.length - 2].time;
+    const secLast = tLast > 1e11 ? Math.floor(tLast / 1000) : Math.floor(tLast);
+    const secPrev = tPrev > 1e11 ? Math.floor(tPrev / 1000) : Math.floor(tPrev);
+    const diff = secLast - secPrev;
+    if (diff > 0 && diff <= 86400) {
+      stepSec = diff;
+    }
+  }
+  if (!stepSec || stepSec > 86400) return candles;
+
+  const stepMs = stepSec * 1000;
+  const currentBucketMs = Math.floor(nowMs / stepMs) * stepMs;
+  const lastRaw = candles[candles.length - 1].time;
+  const lastMs = lastRaw > 1e11 ? lastRaw : lastRaw * 1000;
+  const lastBucketMs = Math.floor(lastMs / stepMs) * stepMs;
+  const deltaMs = currentBucketMs - lastBucketMs;
+
+  if (deltaMs > 0 && deltaMs <= 86400 * 1000 * 3) {
+    return candles.map((c) => {
+      const cMs = c.time > 1e11 ? c.time : c.time * 1000;
+      const cBucketMs = Math.floor(cMs / stepMs) * stepMs;
+      return {
+        ...c,
+        time: cBucketMs + deltaMs,
+      };
+    });
+  } else if (deltaMs === 0 && lastMs !== currentBucketMs) {
+    const copy = candles.map((c) => ({ ...c }));
+    const lastIdx = copy.length - 1;
+    if (lastIdx >= 1) {
+      const prevRaw = copy[lastIdx - 1].time;
+      const prevMs = prevRaw > 1e11 ? prevRaw : prevRaw * 1000;
+      const prevBucketMs = Math.floor(prevMs / stepMs) * stepMs;
+      if (prevBucketMs === currentBucketMs) {
+        copy[lastIdx - 1] = {
+          ...copy[lastIdx - 1],
+          time: currentBucketMs,
+          high: Math.max(copy[lastIdx - 1].high, copy[lastIdx].high),
+          low: Math.min(copy[lastIdx - 1].low, copy[lastIdx].low),
+          close: copy[lastIdx].close,
+        };
+        copy.pop();
+        return copy;
+      }
+    }
+    copy[lastIdx].time = currentBucketMs;
+    return copy;
+  }
+
+  return candles;
+}
+
+/**
+ * Returns cached exchange klines for a symbol + timeframe if already fetched, avoiding any synthetic seed flash.
+ */
+export function getCachedExchangeCandles(
+  symbol: SymbolCode,
+  intervalLabel: string,
+  liveBid?: number
+): LiveCandle[] | null {
+  const norm = intervalLabel === '1M' ? '1M' : intervalLabel.toLowerCase();
+  const cacheKey = `${symbol}_${norm}`;
+  const cached = klineSeriesCache.get(cacheKey);
+  if (!cached || cached.candles.length === 0) return null;
+  if (!cached.candles[cached.candles.length - 1]?.isExchangeKline) return null;
+  const timeSynced = synchronizeCandlesToRealtimeBucket(cached.candles, symbol, intervalLabel);
+  return reconcileCandlesWithLiveQuote(
+    timeSynced,
+    symbol,
+    liveBid || 0,
+    BINANCE_SYMBOL_MAP[symbol] && symbol !== 'XAUUSD' ? 'binance' : 'yahoo'
+  );
+}
+
+/**
+ * Computes the logical bar range to focus the chart viewport directly on the current live price
+ * and the most recent real-time candles when switching or clicking any pair.
+ */
+export function computeCurrentPriceFocusLogicalRange(
+  totalBars: number,
+  visibleWindowBars = 65,
+  rightOffsetBars = 5
+): { from: number; to: number } {
+  const safeTotal = Math.max(1, Math.floor(totalBars || 1));
+  const windowSize = Math.min(safeTotal, Math.max(20, Math.floor(visibleWindowBars)));
+  const from = Math.max(0, safeTotal - windowSize);
+  const to = safeTotal - 1 + Math.max(2, Math.floor(rightOffsetBars));
+  return { from, to };
+}
+
+/**
+ * Reconciles authentic exchange OHLCV bars with the live terminal Bid quote for a strict 1:1 reflection:
+ * - Synchronizes delayed bar timestamps to the current real-time bucket when the market is open.
+ * - For direct Binance Crypto feeds (BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD), historical closed candles (0 .. n-2)
+ *   are preserved 100% untouched and the active right-most bar's close/high/low reflects the current liveBid.
+ * - For Futures-to-Spot / delayed feeds (XAUUSD, XAGUSD, Forex, Indices, Commodities), aligns the series to liveBid
+ *   so the chart's current price always matches the terminal's live Bid 1:1 with zero basis jump.
+ */
+export function reconcileCandlesWithLiveQuote(
+  series: LiveCandle[],
+  symbol: SymbolCode,
+  liveBid: number,
+  source: 'binance' | 'yahoo' | 'fallback' = 'yahoo',
+  intervalLabel?: string
+): LiveCandle[] {
+  if (!Array.isArray(series) || series.length === 0) return series;
+  const syncedSeries = synchronizeCandlesToRealtimeBucket(series, symbol, intervalLabel);
+  if (!Number.isFinite(liveBid) || liveBid <= 0) return syncedSeries;
+
+  const spec = INSTRUMENTS[symbol] || INSTRUMENTS.XAUUSD;
+  const lastIdx = syncedSeries.length - 1;
+  const lastBar = syncedSeries[lastIdx];
+  const lastClose = lastBar.close;
+  if (!Number.isFinite(lastClose) || lastClose <= 0) return syncedSeries;
+
+  const relDiff = Math.abs(liveBid - lastClose) / lastClose;
+
+  // Never shift authentic exchange klines to an unverified static seed price from INSTRUMENTS[symbol].basePrice
+  if (
+    lastBar.isExchangeKline &&
+    Math.abs(liveBid - spec.basePrice) < 1e-6 &&
+    relDiff > 0.015
+  ) {
+    return syncedSeries;
+  }
+
+  // Direct Binance Crypto klines (excluding XAUUSD which is anchored to Swissquote Spot XAU/USD):
+  // keep historical bars (0 .. n-2) 100% untouched, update forming bar to match liveBid
+  const isDirectCrypto =
+    (source === 'binance' || Boolean(BINANCE_SYMBOL_MAP[symbol])) && symbol !== 'XAUUSD';
+
+  if (isDirectCrypto) {
+    if (relDiff > 0.08) {
+      return syncedSeries;
+    }
+    const nextClose = roundPrice(liveBid, symbol);
+    const updatedLast: LiveCandle = {
+      ...lastBar,
+      close: nextClose,
+      high: roundPrice(Math.max(lastBar.high, lastBar.open, nextClose), symbol),
+      low: roundPrice(Math.min(lastBar.low, lastBar.open, nextClose), symbol),
+    };
+    return [...syncedSeries.slice(0, -1), updatedLast];
+  }
+
+  // If liveBid is an uninitialized seed (>8% away from real exchange kline), preserve real exchange klines
+  if (relDiff > 0.08 && lastBar.isExchangeKline) {
+    return syncedSeries;
+  }
+
+  return alignCandlesToSpot(syncedSeries, symbol, liveBid);
+}
+
+/**
  * Normalizes raw Yahoo Finance / Binance kline arrays while preserving 1:1 TradingView
- * candlestick patterns (exact bodies, polarity, dojis, hammers, pin bars, and real wicks)
- * and anchoring the right-most candle to liveBid.
+ * candlestick patterns (exact bodies, polarity, dojis, hammers, pin bars, and real wicks),
+ * synchronizing timestamps to the current real-time bucket, and anchoring the right-most candle to liveBid.
  */
 function parseAndAlignExchangeKlines(
   raw: any[],
   symbol: SymbolCode,
   intervalLabel: string,
-  liveBid: number
+  liveBid: number,
+  source: 'binance' | 'yahoo' = 'yahoo'
 ): LiveCandle[] {
   const spec = INSTRUMENTS[symbol] || INSTRUMENTS.XAUUSD;
   const isMonthly = intervalLabel === '1M' || intervalLabel.toLowerCase() === '1month';
@@ -719,14 +927,15 @@ function parseAndAlignExchangeKlines(
     });
   }
 
+  const timeSynced = synchronizeCandlesToRealtimeBucket(cleaned, symbol, intervalLabel);
   const cacheKey = `${symbol}_${norm}`;
-  klineSeriesCache.set(cacheKey, { ts: Date.now(), candles: cleaned });
+  klineSeriesCache.set(cacheKey, { ts: Date.now(), candles: timeSynced });
 
-  return alignCandlesToSpot(cleaned, symbol, liveBid);
+  return reconcileCandlesWithLiveQuote(timeSynced, symbol, liveBid, source);
 }
 
 /**
- * Fetches real historical OHLCV candlesticks across all timeframes ('1m', '5m', '15m', '30m', '1h', '4h', '1d', '1W')
+ * Fetches real historical OHLCV candlesticks across all timeframes ('1s', '1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '1d', '1W', '1M')
  * via our server proxy (Yahoo Finance v8 + Binance Vision), with instant fallback.
  */
 export async function fetchLiveInstrumentCandles(
@@ -734,6 +943,7 @@ export async function fetchLiveInstrumentCandles(
   intervalLabel: string,
   liveBid: number
 ): Promise<LiveCandle[]> {
+  const spec = INSTRUMENTS[symbol] || INSTRUMENTS.XAUUSD;
   const effectiveBid =
     symbol === 'XAUUSD' &&
     authoritativeXauSpotBid > 0 &&
@@ -743,15 +953,19 @@ export async function fetchLiveInstrumentCandles(
 
   const binanceSym = BINANCE_KLINE_SYMBOL_MAP[symbol];
   const intervalMap: Record<string, string> = {
+    '1s': '1m',
     '1m': '1m',
+    '3m': '3m',
     '5m': '5m',
     '15m': '15m',
     '30m': '30m',
     '1h': '1h',
+    '2h': '2h',
     '4h': '4h',
     '1d': '1d',
     '1D': '1d',
     '1W': '1w',
+    '1w': '1w',
     '1M': '1M',
   };
   const bInterval = intervalMap[intervalLabel] || intervalMap[intervalLabel.toLowerCase()] || '15m';
@@ -763,12 +977,31 @@ export async function fetchLiveInstrumentCandles(
         `/api/market/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(
           bInterval
         )}&limit=350`,
-        2800
+        3200
       );
       if (proxyRes.ok) {
         const proxyJson = await proxyRes.json();
         if (proxyJson?.ok && Array.isArray(proxyJson.klines) && proxyJson.klines.length > 0) {
-          return parseAndAlignExchangeKlines(proxyJson.klines, symbol, intervalLabel, effectiveBid);
+          const klineSource: 'binance' | 'yahoo' =
+            (proxyJson.source === 'binance' || Boolean(BINANCE_SYMBOL_MAP[symbol])) &&
+            symbol !== 'XAUUSD'
+              ? 'binance'
+              : 'yahoo';
+          const lastKlineClose = parseFloat(
+            proxyJson.klines[proxyJson.klines.length - 1]?.[4]
+          );
+          const isStaticSeedBid =
+            !effectiveBid || Math.abs(effectiveBid - spec.basePrice) < 1e-6;
+          const authoritativeBid = isStaticSeedBid
+            ? Number(proxyJson.metaPrice) || lastKlineClose || effectiveBid
+            : effectiveBid;
+          return parseAndAlignExchangeKlines(
+            proxyJson.klines,
+            symbol,
+            intervalLabel,
+            authoritativeBid,
+            klineSource
+          );
         }
       }
     } catch {
@@ -787,7 +1020,21 @@ export async function fetchLiveInstrumentCandles(
         if (res.ok) {
           const raw = await res.json();
           if (Array.isArray(raw) && raw.length > 0) {
-            return parseAndAlignExchangeKlines(raw, symbol, intervalLabel, effectiveBid);
+            const klineSource: 'binance' | 'yahoo' =
+              BINANCE_SYMBOL_MAP[symbol] && symbol !== 'XAUUSD' ? 'binance' : 'yahoo';
+            const lastKlineClose = parseFloat(raw[raw.length - 1]?.[4]);
+            const isStaticSeedBid =
+              !effectiveBid || Math.abs(effectiveBid - spec.basePrice) < 1e-6;
+            const authoritativeBid = isStaticSeedBid
+              ? lastKlineClose || effectiveBid
+              : effectiveBid;
+            return parseAndAlignExchangeKlines(
+              raw,
+              symbol,
+              intervalLabel,
+              authoritativeBid,
+              klineSource
+            );
           }
         }
       } catch {
@@ -802,7 +1049,8 @@ export async function fetchLiveInstrumentCandles(
 /**
  * Connects a live WebSocket stream (using Binance Data Vision global endpoint first, then standard stream)
  * for real-time sub-second orderbook ticks (@bookTicker + @aggTrade + @ticker), plus a 2.5s Swissquote
- * Institutional Spot Gold (XAU/USD) & Forex BBO stream so Gold matches TradingView live price 1:1.
+ * Institutional Spot Gold (XAU/USD) & Forex BBO stream AND a 420ms ECN orderbook micro-tick stream
+ * so all 24 symbols tick live in real time on the TradingView Lightweight Chart.
  */
 export function subscribeLiveMarketStream(
   onQuoteUpdate: (quote: Partial<MarketQuote> & { symbol: SymbolCode }) => void,
@@ -813,7 +1061,17 @@ export function subscribeLiveMarketStream(
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   let endpointIndex = 0;
 
-  // Poll live Swissquote XAU/USD + Forex BBO + Crypto via our /api/market/quotes server proxy every 3.5 seconds for exact institutional price parity
+  const authoritativeSpotBids: Partial<Record<SymbolCode, number>> = {};
+  const currentSimulatedBids: Partial<Record<SymbolCode, number>> = {};
+  const lastDirectTickTs: Partial<Record<SymbolCode, number>> = {};
+
+  (Object.keys(INSTRUMENTS) as SymbolCode[]).forEach((sym) => {
+    const base = INSTRUMENTS[sym].basePrice;
+    authoritativeSpotBids[sym] = base;
+    currentSimulatedBids[sym] = base;
+  });
+
+  // Poll live Swissquote XAU/USD + Forex BBO + Indices/Oil + Crypto via our /api/market/quotes server proxy
   const pollFastSpotQuotes = async () => {
     if (closed) return;
     if (typeof document !== 'undefined' && document.hidden) return;
@@ -829,19 +1087,36 @@ export function subscribeLiveMarketStream(
               const spec = INSTRUMENTS[sym];
               if (sq && spec && Number(sq.bid) > 0) {
                 const bid = roundPrice(Number(sq.bid), sym);
-                const ask = roundPrice(bid + spec.spread, sym);
+                const ask = roundPrice(
+                  Number(sq.ask) > bid
+                    ? Math.min(Number(sq.ask), bid + spec.spread * 1.5)
+                    : bid + spec.spread,
+                  sym
+                );
+                authoritativeSpotBids[sym] = bid;
+                currentSimulatedBids[sym] = bid;
+                lastDirectTickTs[sym] = Date.now();
                 if (sym === 'XAUUSD') {
                   authoritativeXauSpotBid = bid;
-                  INSTRUMENTS.XAUUSD.basePrice = bid;
                   gotXauFromProxy = true;
                 }
-                onQuoteUpdate({
+                const payloadUpdate: Partial<MarketQuote> & { symbol: SymbolCode } = {
                   symbol: sym,
                   bid,
                   ask,
                   last: roundPrice((bid + ask) / 2, sym),
                   timestamp: Date.now(),
-                });
+                };
+                if (typeof sq.change24hPct === 'number' && Number.isFinite(sq.change24hPct)) {
+                  payloadUpdate.change24hPct = sq.change24hPct;
+                }
+                if (Number(sq.high24h) > 0) {
+                  payloadUpdate.high24h = roundPrice(Math.max(bid, Number(sq.high24h)), sym);
+                }
+                if (Number(sq.low24h) > 0) {
+                  payloadUpdate.low24h = roundPrice(Math.min(bid, Number(sq.low24h)), sym);
+                }
+                onQuoteUpdate(payloadUpdate);
               }
             });
           }
@@ -863,7 +1138,9 @@ export function subscribeLiveMarketStream(
             const bid = roundPrice(price - 0.15, 'XAUUSD');
             const ask = roundPrice(bid + spec.spread, 'XAUUSD');
             authoritativeXauSpotBid = bid;
-            INSTRUMENTS.XAUUSD.basePrice = bid;
+            authoritativeSpotBids.XAUUSD = bid;
+            currentSimulatedBids.XAUUSD = bid;
+            lastDirectTickTs.XAUUSD = Date.now();
             onQuoteUpdate({
               symbol: 'XAUUSD',
               bid,
@@ -880,7 +1157,7 @@ export function subscribeLiveMarketStream(
   };
 
   void pollFastSpotQuotes();
-  const spotQuotesTimer = setInterval(pollFastSpotQuotes, 6000);
+  const spotQuotesTimer = setInterval(pollFastSpotQuotes, 2500);
 
   const streamList = [
     'paxgusdt@bookTicker',
@@ -918,20 +1195,25 @@ export function subscribeLiveMarketStream(
           if (!data || !data.s) return;
           const upperSym = String(data.s).toUpperCase();
 
-          // For PAXGUSDT bookTicker, apply smooth orderbook bid micro-delta strictly anchored to Swissquote XAU/USD spot
+          // For PAXGUSDT bookTicker, apply authentic exchange delta anchored to XAU/USD spot without synthetic random noise
           if (upperSym === 'PAXGUSDT') {
+            if (!getMarketStatus('XAUUSD').isOpen) return;
             const rawPaxg = parseFloat(data.b || '0');
             if (rawPaxg <= 0) return;
             if (!lastPaxgRawBid || Math.abs(rawPaxg - lastPaxgRawBid) > 6) {
               lastPaxgRawBid = rawPaxg;
-            } else {
-              lastPaxgRawBid = lastPaxgRawBid * 0.9 + rawPaxg * 0.1;
+              return;
             }
-            const microDelta = Math.max(-0.14, Math.min(0.14, rawPaxg - lastPaxgRawBid));
+            const microDelta = Math.max(-0.18, Math.min(0.18, rawPaxg - lastPaxgRawBid));
+            lastPaxgRawBid = lastPaxgRawBid * 0.85 + rawPaxg * 0.15;
+            if (Math.abs(microDelta) < 0.01) return;
             const spec = INSTRUMENTS.XAUUSD;
             const baseSpot = authoritativeXauSpotBid > 0 ? authoritativeXauSpotBid : spec.basePrice;
             const bid = roundPrice(baseSpot + microDelta, 'XAUUSD');
             const ask = roundPrice(bid + spec.spread, 'XAUUSD');
+            if (currentSimulatedBids.XAUUSD === bid) return;
+            currentSimulatedBids.XAUUSD = bid;
+            lastDirectTickTs.XAUUSD = Date.now();
             onQuoteUpdate({
               symbol: 'XAUUSD',
               bid,
@@ -954,6 +1236,9 @@ export function subscribeLiveMarketStream(
             const bid = roundPrice(rawBid, sym);
             const ask = roundPrice(Math.max(bid + spec.spread, rawAsk), sym);
             const last = roundPrice((bid + ask) / 2, sym);
+            authoritativeSpotBids[sym] = bid;
+            currentSimulatedBids[sym] = bid;
+            lastDirectTickTs[sym] = Date.now();
 
             onQuoteUpdate({
               symbol: sym,
@@ -976,6 +1261,9 @@ export function subscribeLiveMarketStream(
           const change24hPct = Math.round(parseFloat(data.P || '0') * 100) / 100;
           const high24h = roundPrice(parseFloat(data.h || String(bid)), sym);
           const low24h = roundPrice(parseFloat(data.l || String(bid)), sym);
+          authoritativeSpotBids[sym] = bid;
+          currentSimulatedBids[sym] = bid;
+          lastDirectTickTs[sym] = Date.now();
 
           onQuoteUpdate({
             symbol: sym,
@@ -1000,10 +1288,9 @@ export function subscribeLiveMarketStream(
       };
 
       ws.onclose = () => {
-        if (!closed) {
-          endpointIndex++;
-          reconnectTimer = setTimeout(connect, 3000);
-        }
+        if (closed) return;
+        endpointIndex++;
+        reconnectTimer = setTimeout(connect, 3000);
       };
     } catch {
       if (!closed && onStatusChange) {
@@ -1025,3 +1312,617 @@ export function subscribeLiveMarketStream(
     }
   };
 }
+
+export interface LightweightOhlcBar {
+  time: number; // Unix timestamp in seconds (UTCTimestamp)
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+export type OhlcWsStatus = 'connecting' | 'connected' | 'reconnecting' | 'fallback';
+
+function toUnixSeconds(rawTime: number): number {
+  if (!Number.isFinite(rawTime)) return 0;
+  return rawTime > 1e11 ? Math.floor(rawTime / 1000) : Math.floor(rawTime);
+}
+
+/**
+ * Normalizes LiveCandle[] (millisecond or second timestamps) into strictly ascending,
+ * deduplicated Unix-second OHLC bars safe for TradingView Lightweight Charts.
+ */
+export function normalizeCandlesForLightweightCharts(
+  candles: LiveCandle[]
+): LightweightOhlcBar[] {
+  if (!Array.isArray(candles) || candles.length === 0) return [];
+  const byTime = new Map<number, LightweightOhlcBar>();
+
+  for (const c of candles) {
+    if (!c) continue;
+    const t = toUnixSeconds(c.time);
+    const open = Number(c.open);
+    const close = Number(c.close);
+    const high = Number(c.high);
+    const low = Number(c.low);
+    const volume = Number(c.volume);
+
+    if (
+      t <= 0 ||
+      !Number.isFinite(open) ||
+      !Number.isFinite(close) ||
+      !Number.isFinite(high) ||
+      !Number.isFinite(low) ||
+      open <= 0 ||
+      close <= 0
+    ) {
+      continue;
+    }
+
+    const bodyMax = Math.max(open, close);
+    const bodyMin = Math.min(open, close);
+    byTime.set(t, {
+      time: t,
+      open,
+      high: Math.max(high, bodyMax),
+      low: Math.min(low, bodyMin),
+      close,
+      volume: Number.isFinite(volume) && volume > 0 ? Math.round(volume) : 50,
+    });
+  }
+
+  return Array.from(byTime.values()).sort((a, b) => a.time - b.time);
+}
+
+/**
+ * Computes Heikin-Ashi smoothed OHLC bars from standard LightweightOhlcBar[].
+ */
+export function transformCandlesToHeikinAshi(
+  bars: LightweightOhlcBar[]
+): LightweightOhlcBar[] {
+  if (!Array.isArray(bars) || bars.length === 0) return [];
+  const result: LightweightOhlcBar[] = [];
+  let prevHaOpen = (bars[0].open + bars[0].close) / 2;
+  let prevHaClose = (bars[0].open + bars[0].high + bars[0].low + bars[0].close) / 4;
+
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const haClose = (b.open + b.high + b.low + b.close) / 4;
+    const haOpen = i === 0 ? (b.open + b.close) / 2 : (prevHaOpen + prevHaClose) / 2;
+    const haHigh = Math.max(b.high, haOpen, haClose);
+    const haLow = Math.min(b.low, haOpen, haClose);
+    result.push({
+      time: b.time,
+      open: haOpen,
+      high: haHigh,
+      low: haLow,
+      close: haClose,
+      volume: b.volume,
+    });
+    prevHaOpen = haOpen;
+    prevHaClose = haClose;
+  }
+  return result;
+}
+
+/**
+ * Safely merges a real-time WebSocket OHLC candle update into the sorted bar array.
+ * Rejects stale/out-of-order timestamps so Lightweight Charts `series.update()` never throws.
+ */
+export function mergeRealtimeOhlcBar(
+  bars: LightweightOhlcBar[],
+  incoming: LightweightOhlcBar,
+  maxBars = 500
+): {
+  bars: LightweightOhlcBar[];
+  updatedBar: LightweightOhlcBar | null;
+  action: 'append' | 'update' | 'ignore';
+} {
+  const timeSec = toUnixSeconds(incoming?.time);
+  const open = Number(incoming?.open);
+  const high = Number(incoming?.high);
+  const low = Number(incoming?.low);
+  const close = Number(incoming?.close);
+  const volume = Number(incoming?.volume ?? 50);
+
+  if (
+    timeSec <= 0 ||
+    !Number.isFinite(close) ||
+    close <= 0 ||
+    !Number.isFinite(open) ||
+    open <= 0
+  ) {
+    return { bars, updatedBar: null, action: 'ignore' };
+  }
+
+  const normalizedIncoming: LightweightOhlcBar = {
+    time: timeSec,
+    open,
+    high: Number.isFinite(high) ? Math.max(high, open, close) : Math.max(open, close),
+    low: Number.isFinite(low) ? Math.min(low, open, close) : Math.min(open, close),
+    close,
+    volume: Number.isFinite(volume) && volume > 0 ? Math.round(volume) : 50,
+  };
+
+  if (bars.length === 0) {
+    return {
+      bars: [normalizedIncoming],
+      updatedBar: normalizedIncoming,
+      action: 'append',
+    };
+  }
+
+  const last = bars[bars.length - 1];
+  if (timeSec < last.time) {
+    return { bars, updatedBar: null, action: 'ignore' };
+  }
+
+  if (timeSec === last.time) {
+    const merged: LightweightOhlcBar = {
+      time: last.time,
+      open: last.open,
+      high: Math.max(last.high, normalizedIncoming.high, normalizedIncoming.close),
+      low: Math.min(last.low, normalizedIncoming.low, normalizedIncoming.close),
+      close: normalizedIncoming.close,
+      volume: Math.max(last.volume, normalizedIncoming.volume),
+    };
+    const next = [...bars.slice(0, -1), merged];
+    return { bars: next, updatedBar: merged, action: 'update' };
+  }
+
+  const appended = [...bars, normalizedIncoming];
+  const trimmed = appended.length > maxBars ? appended.slice(appended.length - maxBars) : appended;
+  return {
+    bars: trimmed,
+    updatedBar: normalizedIncoming,
+    action: 'append',
+  };
+}
+
+/**
+ * Updates or rolls over the active candle bar from a real-time Bid quote tick.
+ */
+export function mergeSpotTickIntoLatestCandle(
+  bars: LightweightOhlcBar[],
+  spotPrice: number,
+  timeframeSeconds: number,
+  nowMs: number = Date.now(),
+  maxBars = 500
+): {
+  bars: LightweightOhlcBar[];
+  updatedBar: LightweightOhlcBar | null;
+} {
+  if (!Number.isFinite(spotPrice) || spotPrice <= 0 || bars.length === 0) {
+    return { bars, updatedBar: null };
+  }
+  const stepSec = Math.max(1, Math.floor(timeframeSeconds || 60));
+  const nowSec = Math.floor(nowMs / 1000);
+  const bucketSec = Math.floor(nowSec / stepSec) * stepSec;
+  const last = bars[bars.length - 1];
+
+  if (bucketSec <= last.time) {
+    const updated: LightweightOhlcBar = {
+      time: last.time,
+      open: last.open,
+      high: Math.max(last.high, spotPrice),
+      low: Math.min(last.low, spotPrice),
+      close: spotPrice,
+      volume: last.volume + 1,
+    };
+    return {
+      bars: [...bars.slice(0, -1), updated],
+      updatedBar: updated,
+    };
+  }
+
+  // If multiple buckets elapsed (e.g. tab was backgrounded), shift or bridge so there is no candle gap
+  const missingBuckets = Math.floor((bucketSec - last.time) / stepSec);
+  if (missingBuckets > 1 && missingBuckets <= 60) {
+    const deltaSec = (missingBuckets - 1) * stepSec;
+    const shifted = bars.map((b) => ({
+      ...b,
+      time: b.time + deltaSec,
+    }));
+    const prevLast = shifted[shifted.length - 1];
+    const newBar: LightweightOhlcBar = {
+      time: bucketSec,
+      open: prevLast.close,
+      high: Math.max(prevLast.close, spotPrice),
+      low: Math.min(prevLast.close, spotPrice),
+      close: spotPrice,
+      volume: 25,
+    };
+    const next = [...shifted, newBar];
+    return {
+      bars: next.length > maxBars ? next.slice(next.length - maxBars) : next,
+      updatedBar: newBar,
+    };
+  }
+
+  const newBar: LightweightOhlcBar = {
+    time: bucketSec,
+    open: last.close,
+    high: Math.max(last.close, spotPrice),
+    low: Math.min(last.close, spotPrice),
+    close: spotPrice,
+    volume: 25,
+  };
+  const next = [...bars, newBar];
+  return {
+    bars: next.length > maxBars ? next.slice(next.length - maxBars) : next,
+    updatedBar: newBar,
+  };
+}
+
+export function computeEmaSeries(
+  bars: LightweightOhlcBar[],
+  period: number
+): { time: number; value: number }[] {
+  if (!Array.isArray(bars) || bars.length < period || period < 2) return [];
+  const k = 2 / (period + 1);
+  let sma = 0;
+  for (let i = 0; i < period; i++) {
+    sma += bars[i].close;
+  }
+  let ema = sma / period;
+  const out: { time: number; value: number }[] = [{ time: bars[period - 1].time, value: ema }];
+  for (let i = period; i < bars.length; i++) {
+    ema = bars[i].close * k + ema * (1 - k);
+    out.push({ time: bars[i].time, value: ema });
+  }
+  return out;
+}
+
+export function computeBollingerBands(
+  bars: LightweightOhlcBar[],
+  period = 20,
+  stdDevMult = 2
+): {
+  upper: { time: number; value: number }[];
+  middle: { time: number; value: number }[];
+  lower: { time: number; value: number }[];
+} {
+  const upper: { time: number; value: number }[] = [];
+  const middle: { time: number; value: number }[] = [];
+  const lower: { time: number; value: number }[] = [];
+  if (!Array.isArray(bars) || bars.length < period) return { upper, middle, lower };
+
+  for (let i = period - 1; i < bars.length; i++) {
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      sum += bars[j].close;
+    }
+    const mean = sum / period;
+    let sqSum = 0;
+    for (let j = i - period + 1; j <= i; j++) {
+      const diff = bars[j].close - mean;
+      sqSum += diff * diff;
+    }
+    const std = Math.sqrt(sqSum / period);
+    const t = bars[i].time;
+    middle.push({ time: t, value: mean });
+    upper.push({ time: t, value: mean + stdDevMult * std });
+    lower.push({ time: t, value: mean - stdDevMult * std });
+  }
+  return { upper, middle, lower };
+}
+
+export function computeSmaSeries(
+  bars: LightweightOhlcBar[],
+  period = 20
+): { time: number; value: number }[] {
+  if (!Array.isArray(bars) || bars.length < period || period < 2) return [];
+  const out: { time: number; value: number }[] = [];
+  let windowSum = 0;
+  for (let i = 0; i < bars.length; i++) {
+    windowSum += bars[i].close;
+    if (i >= period) {
+      windowSum -= bars[i - period].close;
+    }
+    if (i >= period - 1) {
+      out.push({ time: bars[i].time, value: windowSum / period });
+    }
+  }
+  return out;
+}
+
+export function computeVwapSeries(
+  bars: LightweightOhlcBar[]
+): { time: number; value: number }[] {
+  if (!Array.isArray(bars) || bars.length === 0) return [];
+  const out: { time: number; value: number }[] = [];
+  let cumPV = 0;
+  let cumVol = 0;
+  let lastSessionDay = -1;
+
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const dayBucket = Math.floor(b.time / 86400);
+    if (dayBucket !== lastSessionDay) {
+      lastSessionDay = dayBucket;
+      cumPV = 0;
+      cumVol = 0;
+    }
+    const typicalPrice = (b.high + b.low + b.close) / 3;
+    const vol = Math.max(1, Number(b.volume) || 1);
+    cumPV += typicalPrice * vol;
+    cumVol += vol;
+    out.push({
+      time: b.time,
+      value: cumVol > 0 ? cumPV / cumVol : typicalPrice,
+    });
+  }
+  return out;
+}
+
+export function resolveBinanceKlineStreamParam(
+  symbol: SymbolCode,
+  intervalLabel: string
+): { stream: string; wsUrls: string[] } | null {
+  const binanceMap: Partial<Record<SymbolCode, string>> = {
+    BTCUSD: 'btcusdt',
+    ETHUSD: 'ethusdt',
+    SOLUSD: 'solusdt',
+    XRPUSD: 'xrpusdt',
+    BNBUSD: 'bnbusdt',
+  };
+  const bSym = binanceMap[symbol];
+  if (!bSym) return null;
+
+  const intervalMap: Record<string, string> = {
+    '1s': '1s',
+    '1m': '1m',
+    '3m': '3m',
+    '5m': '5m',
+    '15m': '15m',
+    '30m': '30m',
+    '1h': '1h',
+    '2h': '2h',
+    '4h': '4h',
+    '1d': '1d',
+    '1D': '1d',
+    '1W': '1w',
+    '1w': '1w',
+    '1M': '1M',
+  };
+  const bInterval = intervalMap[intervalLabel] || intervalMap[intervalLabel.toLowerCase()] || '15m';
+  const stream = `${bSym}@kline_${bInterval}`;
+  return {
+    stream,
+    wsUrls: [
+      `wss://data-stream.binance.vision/ws/${stream}`,
+      `wss://stream.binance.com:9443/ws/${stream}`,
+    ],
+  };
+}
+
+/**
+ * Subscribes to real-time OHLC candle updates via WebSocket for TradingTerminalChart.
+ * Connects to the FUNDED APEX server WebSocket hub (`/ws/ohlc`) for all 24 symbols
+ * (including institutional Spot Gold XAU/USD, Forex, and Indices), and also subscribes
+ * directly to Binance `@kline_<interval>` WebSocket for sub-second Crypto candle ticks.
+ */
+export function subscribeLiveOhlcWebSocket(params: {
+  symbol: SymbolCode;
+  intervalLabel: string;
+  onBar: (bar: LightweightOhlcBar, meta: { isClosed: boolean; source: string }) => void;
+  onStatus?: (status: OhlcWsStatus, sourceLabel: string) => void;
+}): () => void {
+  const { symbol, intervalLabel, onBar, onStatus } = params;
+  let closed = false;
+  let serverWs: WebSocket | null = null;
+  let binanceWs: WebSocket | null = null;
+  let serverReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let binanceReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let serverAttempts = 0;
+  let binanceEndpointIdx = 0;
+  let lastDirectBinanceKlineTs = 0;
+
+  onStatus?.('connecting', 'Connecting WS...');
+
+  const connectServerWs = () => {
+    if (closed || typeof window === 'undefined' || typeof WebSocket === 'undefined') return;
+    try {
+      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${wsProto}//${window.location.host}/ws/ohlc`;
+      serverWs = new WebSocket(url);
+
+      serverWs.onopen = () => {
+        if (closed || !serverWs) return;
+        serverAttempts = 0;
+        serverWs.send(
+          JSON.stringify({
+            type: 'subscribe',
+            symbol,
+            interval: intervalLabel,
+          })
+        );
+        const marketOpen = getMarketStatus(symbol).isOpen;
+        onStatus?.('connected', marketOpen ? 'WS LIVE' : 'MARKET CLOSED');
+      };
+
+      serverWs.onmessage = (evt) => {
+        if (closed) return;
+        try {
+          const msg = JSON.parse(String(evt.data || '{}'));
+          if (msg?.type === 'subscribed' && msg.symbol === symbol && msg.marketClosed) {
+            onStatus?.('connected', 'MARKET CLOSED');
+            return;
+          }
+          if (msg?.type === 'ohlc' && msg.symbol === symbol && msg.bar) {
+            const isClosedMarket = Boolean(msg.marketClosed) || !getMarketStatus(symbol).isOpen;
+            if (isClosedMarket) {
+              onStatus?.('connected', 'MARKET CLOSED');
+              return;
+            }
+            // If direct Binance @kline_<interval> WebSocket is actively streaming for this Crypto symbol, keep direct exchange klines authoritative
+            if (lastDirectBinanceKlineTs > 0 && Date.now() - lastDirectBinanceKlineTs < 5000) {
+              return;
+            }
+            const b = msg.bar;
+            const timeSec = toUnixSeconds(Number(b.time));
+            const open = Number(b.open);
+            const high = Number(b.high);
+            const low = Number(b.low);
+            const close = Number(b.close);
+            const volume = Number(b.volume ?? 50);
+            if (timeSec > 0 && close > 0 && open > 0) {
+              onBar(
+                {
+                  time: timeSec,
+                  open: roundPrice(open, symbol),
+                  high: roundPrice(Math.max(high, open, close), symbol),
+                  low: roundPrice(Math.min(low, open, close), symbol),
+                  close: roundPrice(close, symbol),
+                  volume: Number.isFinite(volume) && volume > 0 ? Math.round(volume) : 50,
+                },
+                { isClosed: Boolean(msg.isClosed), source: String(msg.source || 'apex-ws') }
+              );
+              onStatus?.('connected', 'WS LIVE');
+            }
+          }
+        } catch {
+          // ignore malformed frames
+        }
+      };
+
+      serverWs.onerror = () => {
+        if (!closed) {
+          onStatus?.('reconnecting', 'WS Reconnecting');
+        }
+      };
+
+      serverWs.onclose = () => {
+        if (closed) return;
+        serverAttempts += 1;
+        const delay = Math.min(10000, 1500 * Math.pow(1.6, Math.min(4, serverAttempts)));
+        onStatus?.('reconnecting', 'WS Reconnecting');
+        serverReconnectTimer = setTimeout(connectServerWs, delay);
+      };
+    } catch {
+      onStatus?.('fallback', 'Live Quote Sync');
+    }
+  };
+
+  const binanceParam = resolveBinanceKlineStreamParam(symbol, intervalLabel);
+  const connectBinanceKlineWs = () => {
+    if (closed || !binanceParam || typeof WebSocket === 'undefined') return;
+    try {
+      const wsUrl = binanceParam.wsUrls[binanceEndpointIdx % binanceParam.wsUrls.length];
+      binanceWs = new WebSocket(wsUrl);
+
+      binanceWs.onopen = () => {
+        if (!closed) {
+          onStatus?.('connected', 'WS LIVE');
+        }
+      };
+
+      binanceWs.onmessage = (evt) => {
+        if (closed) return;
+        try {
+          const payload = JSON.parse(String(evt.data || '{}'));
+          const k = payload?.k;
+          if (!k) return;
+          const timeSec = toUnixSeconds(Number(k.t));
+          const open = Number(k.o);
+          const high = Number(k.h);
+          const low = Number(k.l);
+          const close = Number(k.c);
+          const volume = Number(k.v ?? 50);
+          if (timeSec > 0 && close > 0 && open > 0) {
+            lastDirectBinanceKlineTs = Date.now();
+            onBar(
+              {
+                time: timeSec,
+                open: roundPrice(open, symbol),
+                high: roundPrice(Math.max(high, open, close), symbol),
+                low: roundPrice(Math.min(low, open, close), symbol),
+                close: roundPrice(close, symbol),
+                volume: Number.isFinite(volume) && volume > 0 ? Math.round(volume) : 50,
+              },
+              { isClosed: Boolean(k.x), source: 'binance-kline-ws' }
+            );
+            onStatus?.('connected', 'WS LIVE');
+          }
+        } catch {
+          // ignore malformed kline payload
+        }
+      };
+
+      binanceWs.onerror = () => {
+        binanceEndpointIdx += 1;
+      };
+
+      binanceWs.onclose = () => {
+        if (closed) return;
+        binanceEndpointIdx += 1;
+        binanceReconnectTimer = setTimeout(connectBinanceKlineWs, 3000);
+      };
+    } catch {
+      // fallback to server WS
+    }
+  };
+
+  connectServerWs();
+  if (binanceParam) {
+    connectBinanceKlineWs();
+  }
+
+  heartbeatTimer = setInterval(() => {
+    if (serverWs && serverWs.readyState === WebSocket.OPEN) {
+      try {
+        serverWs.send(JSON.stringify({ type: 'ping' }));
+      } catch {}
+    }
+  }, 25000);
+
+  return () => {
+    closed = true;
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    if (serverReconnectTimer) clearTimeout(serverReconnectTimer);
+    if (binanceReconnectTimer) clearTimeout(binanceReconnectTimer);
+    if (serverWs) {
+      try {
+        serverWs.close();
+      } catch {}
+    }
+    if (binanceWs) {
+      try {
+        binanceWs.close();
+      } catch {}
+    }
+  };
+}
+
+/**
+ * Resolves safe Lightweight Charts price-axis & vertical scroll interaction flags.
+ * Enables vertical price-scale drag and vertical touch drag only when the main series
+ * has populated bars (barCount > 0), preventing `Value is null` errors in PriceScale._internal_scrollTo.
+ */
+export function resolveChartPriceInteractionOptions(barCount: number): {
+  enablePriceAxisScale: boolean;
+  enableVertTouchDrag: boolean;
+} {
+  const hasBars = Number.isFinite(barCount) && barCount > 0;
+  return {
+    enablePriceAxisScale: hasBars,
+    enableVertTouchDrag: hasBars,
+  };
+}
+
+/**
+ * Determines whether the chart should auto-focus/reset its logical viewport range.
+ * Only focuses before the initial load settles or on an explicit user trigger,
+ * preventing live quote/WS ticks from involuntarily hijacking user scroll & zoom.
+ */
+export function shouldAutoFocusChartOnTick(
+  hasInitialFocused: boolean,
+  isExplicitTrigger: boolean
+): boolean {
+  return !hasInitialFocused || Boolean(isExplicitTrigger);
+}
+
+
+

@@ -1,6 +1,9 @@
-import { ChallengeType, PayoutRecordItem } from '../engine/tradingEngine';
+import { ChallengeType, INSTRUMENTS, PayoutRecordItem } from '../engine/tradingEngine';
 
 export const ACCOUNT_SIZES = [5000, 10000, 25000, 50000, 100000, 200000] as const;
+
+export const AFFILIATE_POINTS_PER_REFERRAL = 10;
+export const TWO_STEP_5K_POINT_PRICE = 110;
 
 export interface ChallengeTemplate {
   id: string;
@@ -9,6 +12,7 @@ export interface ChallengeTemplate {
   typeLabel: string;
   accountSize: number;
   priceUsd: number;
+  pointPrice: number;
   startingBalance: number;
   profitTargetPct: number;
   phase2TargetPct?: number;
@@ -19,6 +23,8 @@ export interface ChallengeTemplate {
   maxTradingDays: number; // 0 = unlimited
   leverage: number;
   profitSplitPct: number;
+  consistencyRulePct?: number; // 0 = no consistency cap, 15 = 15% max single trade share
+  drawdownModel?: 'static' | 'trailing' | 'eod_trailing';
   instruments: string[];
   status: 'available' | 'archived';
   expirationDays: number;
@@ -62,17 +68,58 @@ const THREE_STEP_PRICES: Record<number, number> = {
   200000: 399,
 };
 
-const ALL_INSTRUMENTS = [
-  'XAUUSD',
-  'EURUSD',
-  'GBPUSD',
-  'USDJPY',
-  'BTCUSD',
-  'ETHUSD',
-  'NAS100',
-  'US30',
-  'US500',
-];
+export const INSTANT_POINT_PRICES: Record<number, number> = {
+  5000: 240,
+  10000: 480,
+  25000: 950,
+  50000: 1750,
+  100000: 3300,
+  200000: 6000,
+};
+
+export const ONE_STEP_POINT_PRICES: Record<number, number> = {
+  5000: 150,
+  10000: 290,
+  25000: 600,
+  50000: 1100,
+  100000: 2100,
+  200000: 3900,
+};
+
+export const TWO_STEP_POINT_PRICES: Record<number, number> = {
+  5000: TWO_STEP_5K_POINT_PRICE, // 110 PTS (11 Referrals @ 10 PTS/Refer)
+  10000: 210,
+  25000: 450,
+  50000: 850,
+  100000: 1600,
+  200000: 2900,
+};
+
+export const THREE_STEP_POINT_PRICES: Record<number, number> = {
+  5000: 90,
+  10000: 180,
+  25000: 360,
+  50000: 700,
+  100000: 1300,
+  200000: 2400,
+};
+
+export function getChallengePointPrice(
+  challenge: Pick<ChallengeTemplate, 'id' | 'type' | 'accountSize'> & { pointPrice?: number }
+): number {
+  if (challenge.id === 'two-step-5000') return TWO_STEP_5K_POINT_PRICE;
+  if (typeof challenge.pointPrice === 'number' && challenge.pointPrice > 0) {
+    return challenge.pointPrice;
+  }
+  const size = Number(challenge.accountSize) || 5000;
+  if (challenge.type === 'two_step') return TWO_STEP_POINT_PRICES[size] ?? TWO_STEP_5K_POINT_PRICE;
+  if (challenge.type === 'three_step') return THREE_STEP_POINT_PRICES[size] ?? 90;
+  if (challenge.type === 'one_step') return ONE_STEP_POINT_PRICES[size] ?? 150;
+  if (challenge.type === 'instant') return INSTANT_POINT_PRICES[size] ?? 240;
+  return TWO_STEP_5K_POINT_PRICE;
+}
+
+export const ALL_INSTRUMENTS = Object.keys(INSTRUMENTS);
 
 export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
   // INSTANT FUNDING ($5K to $200K) — Direct Funded from Day 1 (No Profit Target)
@@ -83,14 +130,17 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     typeLabel: 'Instant Funding',
     accountSize: size,
     priceUsd: INSTANT_PRICES[size] ?? 39,
+    pointPrice: INSTANT_POINT_PRICES[size] ?? 240,
     startingBalance: size,
     profitTargetPct: 0,
     dailyDrawdownPct: 3,
     maxDrawdownPct: 6,
-    minTradingDays: 5,
+    minTradingDays: 0,
     maxTradingDays: 0,
     leverage: 30,
     profitSplitPct: 80,
+    consistencyRulePct: 15,
+    drawdownModel: 'static' as const,
     instruments: ALL_INSTRUMENTS,
     status: 'available' as const,
     expirationDays: 365,
@@ -103,6 +153,7 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     typeLabel: 'One Step Challenge',
     accountSize: size,
     priceUsd: ONE_STEP_PRICES[size] ?? 24,
+    pointPrice: ONE_STEP_POINT_PRICES[size] ?? 150,
     startingBalance: size,
     profitTargetPct: 10,
     dailyDrawdownPct: 4,
@@ -111,11 +162,13 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     maxTradingDays: 0,
     leverage: 50,
     profitSplitPct: 85,
+    consistencyRulePct: 0,
+    drawdownModel: 'static' as const,
     instruments: ALL_INSTRUMENTS,
     status: 'available' as const,
     expirationDays: 365,
   })),
-  // TWO STEP CHALLENGE ($5K = $17, up to $200K)
+  // TWO STEP CHALLENGE ($5K = $17 / 110 PTS, up to $200K)
   ...ACCOUNT_SIZES.map((size) => ({
     id: `two-step-${size}`,
     title: `$${size.toLocaleString()} Two Step Challenge`,
@@ -123,6 +176,7 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     typeLabel: 'Two Step Challenge',
     accountSize: size,
     priceUsd: TWO_STEP_PRICES[size] ?? 17,
+    pointPrice: TWO_STEP_POINT_PRICES[size] ?? TWO_STEP_5K_POINT_PRICE,
     startingBalance: size,
     profitTargetPct: 8,
     phase2TargetPct: 5,
@@ -132,6 +186,8 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     maxTradingDays: 0,
     leverage: 100,
     profitSplitPct: 90,
+    consistencyRulePct: 0,
+    drawdownModel: 'static' as const,
     instruments: ALL_INSTRUMENTS,
     status: 'available' as const,
     expirationDays: 365,
@@ -144,6 +200,7 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     typeLabel: 'Three Step Challenge',
     accountSize: size,
     priceUsd: THREE_STEP_PRICES[size] ?? 14,
+    pointPrice: THREE_STEP_POINT_PRICES[size] ?? 90,
     startingBalance: size,
     profitTargetPct: 6,
     phase2TargetPct: 6,
@@ -154,6 +211,8 @@ export const INITIAL_CHALLENGES: ChallengeTemplate[] = [
     maxTradingDays: 0,
     leverage: 100,
     profitSplitPct: 90,
+    consistencyRulePct: 0,
+    drawdownModel: 'static' as const,
     instruments: ALL_INSTRUMENTS,
     status: 'available' as const,
     expirationDays: 365,

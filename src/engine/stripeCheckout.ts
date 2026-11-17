@@ -100,15 +100,73 @@ export function verifyUserCredentials(
   };
 }
 
+export function formatCouponTargetLabel(targetId?: string, targetTitle?: string): string {
+  if (targetTitle && targetTitle.trim() && targetTitle.trim().toUpperCase() !== 'ALL EVALUATIONS') {
+    return targetTitle.trim();
+  }
+  if (!targetId || targetId.trim().toUpperCase() === 'ALL') return 'All Evaluations';
+  const cleanTarget = targetId.trim();
+  if (cleanTarget.startsWith('TYPE:')) {
+    const t = cleanTarget.slice(5);
+    if (t === 'one_step') return '1-Step Challenge Evaluations Only';
+    if (t === 'two_step') return '2-Step Challenge Evaluations Only';
+    if (t === 'three_step') return '3-Step Challenge Evaluations Only';
+    if (t === 'instant') return 'Instant Funding Evaluations Only';
+    return `${t} Evaluations Only`;
+  }
+  if (cleanTarget.startsWith('SIZE:')) {
+    const sz = Number(cleanTarget.slice(5));
+    return Number.isFinite(sz)
+      ? `$${sz.toLocaleString()} Evaluations Only`
+      : `${cleanTarget.slice(5)} Evaluations Only`;
+  }
+  const parts = cleanTarget.split('-');
+  const sizeNum = Number(parts[parts.length - 1]);
+  const modelKey = parts.slice(0, -1).join('-');
+  const modelName =
+    modelKey === 'two-step'
+      ? 'Two Step Challenge'
+      : modelKey === 'one-step'
+      ? 'One Step Challenge'
+      : modelKey === 'three-step'
+      ? 'Three Step Challenge'
+      : modelKey === 'instant'
+      ? 'Instant Funding'
+      : cleanTarget;
+  if (Number.isFinite(sizeNum) && sizeNum > 0) {
+    return `$${sizeNum.toLocaleString()} ${modelName}`;
+  }
+  return cleanTarget;
+}
+
+export function doesAdminCouponMatchChallenge(
+  coupon: Pick<AdminCouponRecord, 'targetChallengeId'>,
+  challenge: ChallengeTemplate
+): boolean {
+  const target = (coupon.targetChallengeId || 'ALL').trim();
+  if (!target || target.toUpperCase() === 'ALL') {
+    return true;
+  }
+  if (target.startsWith('TYPE:')) {
+    return challenge.type === target.slice(5);
+  }
+  if (target.startsWith('SIZE:')) {
+    return challenge.accountSize === Number(target.slice(5));
+  }
+  return challenge.id === target;
+}
+
 /**
  * Computes Checkout price breakdown.
- * Validates against Admin-created coupon codes (`adminCoupons`) as well as user coupons (`userCoupons`).
+ * Validates against Admin-created coupon codes (`adminCoupons`) as well as user coupons (`userCoupons`),
+ * strictly enforcing single-evaluation targeting (`targetChallengeId`) and single-use limits (`singleEvaluationOnly`).
  */
 export function computeStripeCheckoutBreakdown(
   challenge: ChallengeTemplate,
   rawCouponCode: string,
   userCoupons: WonSpinCoupon[] = [],
-  adminCoupons: AdminCouponRecord[] = []
+  adminCoupons: AdminCouponRecord[] = [],
+  alreadyUsedCodesByUser: string[] = []
 ): StripePriceBreakdown {
   const originalPriceUsd = Number(challenge.priceUsd.toFixed(2));
   const normalized = rawCouponCode.trim().toUpperCase();
@@ -133,6 +191,45 @@ export function computeStripeCheckoutBreakdown(
   );
 
   if (matchedAdminCoupon) {
+    // Enforce single-evaluation target restriction if configured by Admin
+    if (!doesAdminCouponMatchChallenge(matchedAdminCoupon, challenge)) {
+      const targetLabel = formatCouponTargetLabel(
+        matchedAdminCoupon.targetChallengeId,
+        matchedAdminCoupon.targetChallengeTitle
+      );
+      return {
+        originalPriceUsd,
+        discountPct: 0,
+        discountAmountUsd: 0,
+        finalAmountUsd: originalPriceUsd,
+        appliedCode: null,
+        appliedLabel: null,
+        isFreeAccountCode: false,
+        targetChallengeId: challenge.id,
+        validCode: false,
+        errorMessage: `Coupon "${matchedAdminCoupon.code.toUpperCase()}" applies only to 1 evaluation: ${targetLabel}.`,
+      };
+    }
+
+    // Enforce single-evaluation per trader redemption limit if enabled by Admin
+    if (
+      matchedAdminCoupon.singleEvaluationOnly &&
+      alreadyUsedCodesByUser.some((used) => used.trim().toUpperCase() === normalized)
+    ) {
+      return {
+        originalPriceUsd,
+        discountPct: 0,
+        discountAmountUsd: 0,
+        finalAmountUsd: originalPriceUsd,
+        appliedCode: null,
+        appliedLabel: null,
+        isFreeAccountCode: false,
+        targetChallengeId: challenge.id,
+        validCode: false,
+        errorMessage: `Coupon "${matchedAdminCoupon.code.toUpperCase()}" is limited to 1 evaluation per trader and has already been used.`,
+      };
+    }
+
     const pct = Math.min(100, Math.max(1, matchedAdminCoupon.discountPct));
     const isFree = pct >= 100;
     const discountAmountUsd = isFree

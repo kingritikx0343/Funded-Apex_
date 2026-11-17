@@ -37,6 +37,7 @@
   html {
     min-height: 100%;
     background-color: #04080A;
+    scroll-behavior: smooth;
     -webkit-overflow-scrolling: touch;
     font-family: var(--font-sans);
     font-size: 16px;
@@ -115,12 +116,11 @@
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
     transition:
-      transform 220ms cubic-bezier(0.16, 1, 0.3, 1),
-      box-shadow 220ms cubic-bezier(0.16, 1, 0.3, 1),
-      background-color 180ms ease,
-      border-color 180ms ease,
-      color 180ms ease,
-      opacity 180ms ease;
+      transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+      background-color 160ms ease,
+      border-color 160ms ease,
+      color 160ms ease,
+      opacity 160ms ease;
   }
 
   button:active:not(:disabled), a:active {
@@ -289,6 +289,17 @@
   }
 }
 
+@keyframes apexSheetUp {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0) scale(0.99);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+
 @keyframes apexBackdropFade {
   0% {
     opacity: 0;
@@ -334,14 +345,21 @@
 }
 
 .apex-page-enter {
-  animation: apexFadeUp 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: apexFadeUp 300ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+}
+
+.apex-tab-enter {
+  animation: apexFadeUp 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
   will-change: transform, opacity;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
 }
 
 .apex-fade-up {
-  animation: apexFadeUp 360ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: apexFadeUp 340ms cubic-bezier(0.16, 1, 0.3, 1) both;
   will-change: transform, opacity;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
@@ -382,7 +400,14 @@
 }
 
 .apex-scale-in {
-  animation: apexScaleIn 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: apexScaleIn 210ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  will-change: transform, opacity;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+}
+
+.apex-sheet-up {
+  animation: apexSheetUp 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
   will-change: transform, opacity;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
@@ -396,10 +421,26 @@
 }
 
 .apex-backdrop-enter {
-  animation: apexBackdropFade 140ms ease-out both;
-  will-change: transform, opacity;
+  animation: apexBackdropFade 160ms ease-out both;
+  will-change: opacity;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
+}
+
+.apex-chart-overlay-pill {
+  will-change: transform;
+  backface-visibility: hidden;
+  transition:
+    transform 90ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 160ms ease,
+    background-color 150ms ease,
+    border-color 150ms ease !important;
+}
+
+.apex-chart-overlay-pill-dragging {
+  will-change: transform;
+  backface-visibility: hidden;
+  transition: none !important;
 }
 
 /* ============================================================================
@@ -749,14 +790,16 @@ main .bg-\[\#090D0A\]:hover {
 [data-scroll-reveal],
 [data-reveal] {
   transition:
-    opacity 200ms cubic-bezier(0.22, 1, 0.36, 1),
-    transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+    opacity 420ms cubic-bezier(0.16, 1, 0.3, 1) var(--reveal-delay, 0ms),
+    transform 420ms cubic-bezier(0.16, 1, 0.3, 1) var(--reveal-delay, 0ms),
+    border-color 200ms ease,
+    box-shadow 200ms ease;
 }
 
 .apex-scroll-pending,
 section.apex-scroll-pending {
-  opacity: 0.92;
-  transform: translate3d(0, 12px, 0);
+  opacity: 0.08;
+  transform: translate3d(0, 18px, 0);
 }
 
 .apex-scroll-animated.is-revealed,
@@ -764,7 +807,7 @@ section.apex-scroll-pending {
 [data-scroll-reveal].is-revealed,
 [data-reveal].is-revealed {
   opacity: 1;
-  transform: none;
+  transform: translate3d(0, 0, 0);
 }
 
 @keyframes apexToastCountdown {
@@ -779,24 +822,24 @@ section.apex-scroll-pending {
 @keyframes apexTerminalTopBanner {
   0% {
     opacity: 0;
-    transform: translate3d(-50%, -14px, 0) scale(0.96);
+    transform: translate3d(0, -14px, 0) scale(0.96);
   }
-  15% {
+  8% {
     opacity: 1;
-    transform: translate3d(-50%, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
   }
-  82% {
+  88% {
     opacity: 1;
-    transform: translate3d(-50%, 0, 0) scale(1);
+    transform: translate3d(0, 0, 0) scale(1);
   }
   100% {
     opacity: 0;
-    transform: translate3d(-50%, -10px, 0) scale(0.97);
+    transform: translate3d(0, -10px, 0) scale(0.97);
   }
 }
 
 .apex-terminal-1s-banner {
-  animation: apexTerminalTopBanner 1000ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  animation: apexTerminalTopBanner 2600ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
   will-change: transform, opacity;
 }
 
@@ -843,14 +886,39 @@ section.apex-scroll-pending {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
   .apex-marquee-track,
   .apex-marquee-track-fast,
   .apex-water-caustic-layer,
   .apex-water-caustic-secondary,
-  .apex-float-gentle {
+  .apex-float-gentle,
+  .apex-page-enter,
+  .apex-tab-enter,
+  .apex-fade-up,
+  .apex-scale-in,
+  .apex-sheet-up,
+  .apex-drawer-enter,
+  .apex-backdrop-enter {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
   }
 }
 
+/* Simple, Clean & Professional Typography Override for Affiliate Program */
+.apex-affiliate-simple-font,
+.apex-affiliate-simple-font * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+  letter-spacing: -0.008em !important;
+}
 
+.apex-affiliate-simple-font h1,
+.apex-affiliate-simple-font h2,
+.apex-affiliate-simple-font h3,
+.apex-affiliate-simple-font h4 {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.016em !important;
+  line-height: 1.3 !important;
+}

@@ -10,8 +10,10 @@
         "email": { "type": "string", "format": "email", "maxLength": 256 },
         "country": { "type": "string", "maxLength": 64 },
         "referralCode": { "type": "string", "maxLength": 64 },
+        "referredBy": { "type": "string", "maxLength": 64 },
         "role": { "type": "string", "enum": ["user", "admin", "super_admin"] },
         "rewardPoints": { "type": "number" },
+        "pointsUpdatedAt": { "type": "number" },
         "mfaEnabled": { "type": "boolean" },
         "deletionRequested": { "type": "boolean" },
         "avatarUrl": { "type": "string", "maxLength": 1024 },
@@ -165,13 +167,16 @@
     },
     "AdminCoupon": {
       "title": "AdminCoupon",
-      "description": "Discount coupon code for evaluations",
+      "description": "Discount coupon code for evaluations with optional single-evaluation targeting",
       "type": "object",
       "properties": {
         "id": { "type": "string", "maxLength": 128 },
         "code": { "type": "string", "maxLength": 64 },
         "discountPct": { "type": "number" },
         "description": { "type": "string", "maxLength": 256 },
+        "targetChallengeId": { "type": "string", "maxLength": 64 },
+        "targetChallengeTitle": { "type": "string", "maxLength": 128 },
+        "singleEvaluationOnly": { "type": "boolean" },
         "active": { "type": "boolean" },
         "createdAt": { "type": "string", "maxLength": 64 }
       },

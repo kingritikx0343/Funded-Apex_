@@ -1,9 +1,7 @@
 import React, { useState } from 'react';
-import { motion } from 'framer-motion';
 import { PageRoute, usePlatform } from '../context/PlatformContext';
 import { FundedApexLogo } from './FundedApexLogo';
 import {
-  Terminal,
   Shield,
   LogOut,
   UserCheck,
@@ -30,17 +28,35 @@ export const Navbar: React.FC = () => {
     openStripeCheckout('two-step-5000', '5K30OFF');
   }, [openStripeCheckout]);
 
-  const handleNav = (target: PageRoute, sectionId?: string) => {
+  const handleNav = (
+    target: PageRoute,
+    sectionId?: string,
+    challengeType?: 'two_step' | 'one_step' | 'instant' | 'three_step'
+  ) => {
     setMobileMenuOpen(false);
     setModelsExpanded(false);
+    if (challengeType && typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('apex-select-challenge-type', { detail: challengeType })
+      );
+    }
     if (sectionId && route === 'home') {
-      const el = document.getElementById(sectionId);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth' });
-        return;
-      }
+      requestAnimationFrame(() => {
+        const el = document.getElementById(sectionId);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+      return;
     }
     navigate(target);
+    if (challengeType && typeof window !== 'undefined') {
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('apex-select-challenge-type', { detail: challengeType })
+        );
+      }, 30);
+    }
   };
 
   // Dashboard and Admin views render their own dedicated top bars
@@ -48,27 +64,66 @@ export const Navbar: React.FC = () => {
     return null;
   }
 
-  const modelSubItems: { label: string; badge: string; target: PageRoute; sectionId?: string }[] = [
-    { label: '2-Step Classic Evaluation', badge: '8% / 5% Target', target: 'challenges', sectionId: 'challenges-matrix' },
-    { label: '1-Step Pro Evaluation', badge: '10% Target', target: 'challenges', sectionId: 'challenges-matrix' },
-    { label: 'Instant Funded Account', badge: 'Zero Evaluation', target: 'challenges', sectionId: 'challenges-matrix' },
-    { label: '3-Step Institutional', badge: 'Lowest Fee', target: 'challenges', sectionId: 'challenges-matrix' },
-    { label: 'Account Sizes ($3K – $200K)', badge: 'All Tiers', target: 'account-sizes', sectionId: 'account-sizes-section' },
-    { label: 'Trading Rules & Objectives', badge: 'Up to 95% Split', target: 'trading-rules', sectionId: 'trading-rules-section' },
-    { label: 'Live Trading Terminal', badge: 'XAUUSD & Forex', target: 'terminal' },
+  const modelSubItems: {
+    label: string;
+    badge: string;
+    target: PageRoute;
+    sectionId?: string;
+    challengeType?: 'two_step' | 'one_step' | 'instant' | 'three_step';
+  }[] = [
+    {
+      label: '2-Step Classic Evaluation',
+      badge: '8% / 5% Target',
+      target: 'challenges',
+      sectionId: 'challenges-matrix',
+      challengeType: 'two_step',
+    },
+    {
+      label: '1-Step Pro Evaluation',
+      badge: '10% Target',
+      target: 'challenges',
+      sectionId: 'challenges-matrix',
+      challengeType: 'one_step',
+    },
+    {
+      label: 'Instant Funded Account',
+      badge: 'Zero Evaluation',
+      target: 'challenges',
+      sectionId: 'challenges-matrix',
+      challengeType: 'instant',
+    },
+    {
+      label: '3-Step Institutional',
+      badge: 'Lowest Fee',
+      target: 'challenges',
+      sectionId: 'challenges-matrix',
+      challengeType: 'three_step',
+    },
+    {
+      label: 'Account Sizes ($5K – $200K)',
+      badge: 'All Tiers',
+      target: 'account-sizes',
+      sectionId: 'account-sizes-section',
+    },
+    {
+      label: 'Trading Rules & Objectives',
+      badge: 'Up to 95% Split',
+      target: 'trading-rules',
+      sectionId: 'trading-rules-section',
+    },
   ];
 
   return (
     <header
       data-scroll-container
       data-interactive-container
-      style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-      className="sticky top-0 z-50 w-full transition-all pointer-events-none"
+      style={{ transform: 'translate3d(0, 0, 0)' }}
+      className="sticky top-0 z-50 w-full pointer-events-none"
     >
       {/* Top Promotion Banner — Full-Width Rectangular (No Round Corners) & Vibrant Green */}
       <div
         onClick={handlePromoClick}
-        className="w-full rounded-none bg-gradient-to-r from-[#00C853] via-[#00E5B0] to-[#00B894] border-b border-[#02241A]/35 py-1.5 px-4 overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-105 shadow-[0_6px_20px_rgba(0,229,176,0.28)] transition-all pointer-events-auto"
+        className="w-full rounded-none bg-gradient-to-r from-[#00C853] via-[#00E5B0] to-[#00B894] border-b border-[#02241A]/35 py-1.5 px-4 overflow-hidden whitespace-nowrap cursor-pointer hover:brightness-105 shadow-[0_6px_20px_rgba(0,229,176,0.28)] transition-opacity pointer-events-auto"
       >
         <div className="apex-marquee-track items-center gap-10 text-[11.5px] sm:text-[12px] font-bold text-[#021710]">
           <div className="flex items-center gap-6 shrink-0">
@@ -129,14 +184,14 @@ export const Navbar: React.FC = () => {
         </div>
       </div>
 
-      <div className="max-w-[1440px] mx-auto pt-1.5 sm:pt-2 px-2.5 sm:px-5 lg:px-8 pointer-events-auto">
+      <div className="max-w-[1440px] mx-auto pt-1.5 sm:pt-2 px-2.5 sm:px-5 lg:px-8 pointer-events-auto relative">
         {/* Main Rounded Floating Capsule Navigation Bar */}
-        <div className="rounded-[28px] sm:rounded-full bg-[#051015]/92 backdrop-blur-2xl border border-[#00E5B0]/28 px-4 sm:px-6 h-[60px] sm:h-[64px] flex items-center justify-between gap-3 shadow-[0_18px_46px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(56,248,210,0.18)] transition-all duration-300">
+        <div className="rounded-[28px] sm:rounded-full bg-[#051015]/96 border border-[#00E5B0]/28 px-4 sm:px-6 h-[60px] sm:h-[64px] flex items-center justify-between gap-3 shadow-[0_18px_46px_rgba(0,0,0,0.82),inset_0_1px_0_rgba(56,248,210,0.18)]">
           {/* Left: Unframed White Sticker FUNDED APEX Logo inside the Rounded Top Bar */}
           <button
             type="button"
             onClick={() => handleNav('home')}
-            className="flex items-center gap-2.5 text-left cursor-pointer shrink-0 py-1 transition-transform duration-200 hover:scale-[1.02]"
+            className="flex items-center gap-2.5 text-left cursor-pointer shrink-0 py-1 transition-transform duration-150 hover:scale-[1.02]"
           >
             <FundedApexLogo size="md" showText={true} />
           </button>
@@ -176,7 +231,7 @@ export const Navbar: React.FC = () => {
             >
               <div className="relative w-5 h-3.5 flex flex-col justify-between items-center">
                 <span
-                  className={`w-5 h-[2px] rounded-full bg-white transition-transform duration-200 ease-out ${
+                  className={`w-5 h-[2px] rounded-full bg-white transition-transform duration-150 ease-out ${
                     mobileMenuOpen ? 'translate-y-[6px] rotate-45' : ''
                   }`}
                 />
@@ -186,7 +241,7 @@ export const Navbar: React.FC = () => {
                   }`}
                 />
                 <span
-                  className={`w-5 h-[2px] rounded-full bg-white transition-transform duration-200 ease-out ${
+                  className={`w-5 h-[2px] rounded-full bg-white transition-transform duration-150 ease-out ${
                     mobileMenuOpen ? '-translate-y-[6px] -rotate-45' : ''
                   }`}
                 />
@@ -196,29 +251,25 @@ export const Navbar: React.FC = () => {
         </div>
       </div>
 
-      {/* Simple, Clean, Fast 3-Line Navigation Drawer */}
-      <motion.div
+      {/* Absolute Floating 3-Line Navigation Drawer (Zero Document Layout Reflow on Open or Models Expand) */}
+      <div
         data-testid="three-line-drawer"
         data-interactive-container
         aria-hidden={!mobileMenuOpen}
-        initial={false}
-        animate={{
-          opacity: mobileMenuOpen ? 1 : 0,
-          y: mobileMenuOpen ? 0 : -6,
+        style={{
+          willChange: 'transform, opacity',
+          transform: mobileMenuOpen ? 'translate3d(0, 0, 0) scale(1)' : 'translate3d(0, -10px, 0) scale(0.985)',
         }}
-        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-        style={{ willChange: 'transform, opacity' }}
-        className={`overflow-hidden transition-[max-height,padding] duration-200 ease-out ${
+        className={`absolute left-0 right-0 top-full z-50 transition-[opacity,transform] duration-220 ease-[cubic-bezier(0.16,1,0.3,1)] ${
           mobileMenuOpen
-            ? 'max-h-[680px] pointer-events-auto pb-4'
-            : 'max-h-0 pointer-events-none pb-0'
+            ? 'opacity-100 pointer-events-auto pb-4'
+            : 'opacity-0 pointer-events-none pb-0 invisible'
         }`}
       >
         <div className="max-w-md mx-auto px-2.5 sm:px-4 pt-2">
           <div
             data-interactive-container
-            style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-            className="rounded-[24px] bg-[#061318] border border-[#00E5B0]/30 px-5 py-4 shadow-[0_24px_60px_rgba(0,0,0,0.92)]"
+            className="rounded-[24px] bg-[#061318]/98 border border-[#00E5B0]/30 px-5 py-4 shadow-[0_24px_60px_rgba(0,0,0,0.92)]"
           >
             <nav className="flex flex-col space-y-1" aria-label="Primary 3-Line Navigation">
               {/* 1. MODELS */}
@@ -226,7 +277,7 @@ export const Navbar: React.FC = () => {
                 <div className="w-full flex items-center justify-between py-2 px-3 rounded-[12px] hover:bg-[#0B2028] transition-colors">
                   <button
                     type="button"
-                    onClick={() => handleNav('challenges', 'challenges-matrix')}
+                    onClick={() => setModelsExpanded((prev) => !prev)}
                     className="flex-1 text-left text-[15px] font-sans font-semibold text-white hover:text-[#00E5B0] transition-colors cursor-pointer"
                   >
                     Models
@@ -238,7 +289,7 @@ export const Navbar: React.FC = () => {
                     className="p-1 rounded-full text-[#00E5B0] hover:bg-[#0F2A35] transition-colors cursor-pointer"
                   >
                     <ChevronDown
-                      className={`w-4 h-4 text-[#00E5B0] transition-transform duration-200 ease-out ${
+                      className={`w-4 h-4 text-[#00E5B0] transition-transform duration-150 ease-out ${
                         modelsExpanded ? 'rotate-180' : 'rotate-0'
                       }`}
                     />
@@ -246,20 +297,22 @@ export const Navbar: React.FC = () => {
                 </div>
 
                 <div
-                  className={`grid transition-all duration-200 ease-out ${
+                  data-testid="models-sub-menu"
+                  aria-hidden={!modelsExpanded}
+                  className={`grid transition-[grid-template-rows,opacity] duration-220 ease-[cubic-bezier(0.16,1,0.3,1)] ${
                     modelsExpanded
-                      ? 'grid-rows-[1fr] opacity-100 mt-1'
-                      : 'grid-rows-[0fr] opacity-0 mt-0'
+                      ? 'grid-rows-[1fr] opacity-100'
+                      : 'grid-rows-[0fr] opacity-0 pointer-events-none'
                   }`}
                 >
-                  <div className="overflow-hidden">
-                    <div className="pl-3 pr-1 py-1 space-y-1 border-l border-[#00E5B0]/30 ml-3">
+                  <div className="overflow-hidden min-h-0">
+                    <div className="mt-1 pl-3 pr-1 py-1 space-y-1 border-l border-[#00E5B0]/30 ml-3">
                       {modelSubItems.map((sub) => (
                         <button
                           key={sub.label}
                           type="button"
-                          onClick={() => handleNav(sub.target, sub.sectionId)}
-                          className="w-full px-3 py-1.5 rounded-[10px] hover:bg-[#0B2028] text-left flex items-center justify-between gap-2 transition-colors cursor-pointer group"
+                          onClick={() => handleNav(sub.target, sub.sectionId, sub.challengeType)}
+                          className="w-full px-3 py-1.5 rounded-[10px] hover:bg-[#0B2028] text-left flex items-center justify-between gap-2 transition-colors duration-150 cursor-pointer group"
                         >
                           <span className="text-[13px] font-sans font-medium text-[#D6EBE7] group-hover:text-[#00E5B0]">
                             {sub.label}
@@ -287,23 +340,7 @@ export const Navbar: React.FC = () => {
                 Free Trading Competition
               </button>
 
-              {/* 3. REWARD */}
-              <button
-                type="button"
-                onClick={() => handleNav('free-spin')}
-                className={`w-full px-3 py-2 rounded-[12px] text-left text-[15px] font-sans font-semibold flex items-center justify-between transition-colors cursor-pointer ${
-                  route === 'free-spin'
-                    ? 'bg-[#0B2028] text-[#00E5B0]'
-                    : 'text-white hover:bg-[#0B2028] hover:text-[#00E5B0]'
-                }`}
-              >
-                <span>Reward</span>
-                <span className="text-[10px] font-sans font-semibold px-2 py-0.5 rounded-full bg-[#081920] border border-[#00E5B0]/30 text-[#00E5B0]">
-                  Coming Soon
-                </span>
-              </button>
-
-              {/* 4. AFFILIATE PROGRAM */}
+              {/* 3. AFFILIATE PROGRAM */}
               <button
                 type="button"
                 onClick={() => handleNav('referral')}
@@ -342,7 +379,7 @@ export const Navbar: React.FC = () => {
               )}
             </nav>
 
-            {/* Bottom Actions: Client Area & Terminal */}
+            {/* Bottom Actions: Client Area & Auth */}
             <div className="mt-3.5 pt-3 border-t border-[#00E5B0]/15 flex items-center justify-between gap-2.5">
               <button
                 type="button"
@@ -354,15 +391,6 @@ export const Navbar: React.FC = () => {
               </button>
 
               <div className="flex items-center gap-2 text-xs font-sans font-semibold text-[#A3BDB8]">
-                <button
-                  type="button"
-                  onClick={() => handleNav('terminal')}
-                  className="py-2 px-3.5 rounded-full bg-[#091E26] border border-[#00E5B0]/30 hover:border-[#38F8D2] text-[#38F8D2] inline-flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Terminal className="w-3.5 h-3.5" />
-                  <span>Terminal</span>
-                </button>
-
                 {user ? (
                   <button
                     type="button"
@@ -389,7 +417,7 @@ export const Navbar: React.FC = () => {
             </div>
           </div>
         </div>
-      </motion.div>
+      </div>
     </header>
   );
 };

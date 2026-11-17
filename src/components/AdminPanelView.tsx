@@ -1,8 +1,13 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { usePlatform, UserRole, PaymentGatewaySettings } from '../context/PlatformContext';
 import { AccountStatus, ChallengeType } from '../engine/tradingEngine';
-import { ACCOUNT_SIZES, ChallengeTemplate, COUNTRIES } from '../data/platformData';
-import { buildCustomManualEmailPayload } from '../engine/cloudFunctionsEmail';
+import { ACCOUNT_SIZES, ChallengeTemplate, COUNTRIES, getChallengePointPrice } from '../data/platformData';
+import {
+  buildCustomManualEmailPayload,
+  ADMIN_EMAIL_FORMATS,
+  renderAdminEmailFormat,
+  AdminEmailFormatVars,
+} from '../engine/cloudFunctionsEmail';
 import { FundedApexLogo } from './FundedApexLogo';
 import {
   Activity,
@@ -80,12 +85,14 @@ export const AdminPanelView: React.FC = () => {
     adminResetUserPassword,
     adminDeleteUser,
     adminCreateCoupon,
+    adminUpdateCoupon,
     adminToggleCoupon,
     adminDeleteCoupon,
     adminSavePaymentSettings,
     adminApprovePurchaseRequest,
     adminRejectPurchaseRequest,
     adminAllocateAccountToUser,
+    adminAdjustUserPoints,
     adminBroadcastPromotionalEmail,
     adminSendEmailNotification,
     adminSendManualEmail,
@@ -110,8 +117,11 @@ export const AdminPanelView: React.FC = () => {
 
   // Coupon Creator State
   const [couponCodeInput, setCouponCodeInput] = useState('');
-  const [couponDiscountInput, setCouponDiscountInput] = useState<number>(20);
+  const [couponDiscountInput, setCouponDiscountInput] = useState<number>(30);
   const [couponDescInput, setCouponDescInput] = useState('');
+  const [couponScopeMode, setCouponScopeMode] = useState<'single' | 'all'>('single');
+  const [couponTargetChallengeId, setCouponTargetChallengeId] = useState<string>('two-step-5000');
+  const [couponSingleEvalOnly, setCouponSingleEvalOnly] = useState<boolean>(true);
   const [couponFeedback, setCouponFeedback] = useState<{ type: 'ok' | 'err'; msg: string } | null>(
     null
   );
@@ -129,8 +139,19 @@ export const AdminPanelView: React.FC = () => {
   const [emailPreviewId, setEmailPreviewId] = useState<string>('');
   const [emailDispatchFeedback, setEmailDispatchFeedback] = useState<string | null>(null);
 
-  // Dedicated Manual Professional Email Composer State
-  const [emailSubTab, setEmailSubTab] = useState<'manual' | 'presets'>('manual');
+  // Dedicated Manual Professional Email Composer & Editable Email Formats Hub State
+  const [emailSubTab, setEmailSubTab] = useState<'manual' | 'presets' | 'formats'>('manual');
+  const [selectedFormatId, setSelectedFormatId] = useState<string>('welcome_registration');
+  const [formatTraderUid, setFormatTraderUid] = useState<string>('');
+  const [formatAccountId, setFormatAccountId] = useState<string>('');
+  const [formatVars, setFormatVars] = useState<AdminEmailFormatVars>({});
+  const [formatSubjectDraft, setFormatSubjectDraft] = useState<string>(
+    () => renderAdminEmailFormat('welcome_registration', {}).subject
+  );
+  const [formatBodyDraft, setFormatBodyDraft] = useState<string>(
+    () => renderAdminEmailFormat('welcome_registration', {}).bodyText
+  );
+  const [copiedFormatKey, setCopiedFormatKey] = useState<'subject' | 'body' | 'full' | null>(null);
   const [manualRecipientType, setManualRecipientType] = useState<'select_user' | 'broadcast_all' | 'custom'>('select_user');
   const [manualSelectedUid, setManualSelectedUid] = useState<string>('');
   const [manualRecipientEmail, setManualRecipientEmail] = useState<string>('');
@@ -290,6 +311,44 @@ export const AdminPanelView: React.FC = () => {
     }
   }, [tab, refreshVaultData]);
 
+  const applyEmailFormatSelection = (
+    nextFormatId: string,
+    nextVars: AdminEmailFormatVars
+  ) => {
+    const rendered = renderAdminEmailFormat(nextFormatId, nextVars);
+    setSelectedFormatId(rendered.template.id);
+    setFormatVars(nextVars);
+    setFormatSubjectDraft(rendered.subject);
+    setFormatBodyDraft(rendered.bodyText);
+  };
+
+  const copyFormatText = (kind: 'subject' | 'body' | 'full', value: string) => {
+    const fallbackCopy = () => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.setAttribute('readonly', 'true');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch {
+        // Ignore restricted clipboard environments
+      }
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(value).catch(() => {
+        fallbackCopy();
+      });
+    } else {
+      fallbackCopy();
+    }
+    setCopiedFormatKey(kind);
+    setTimeout(() => setCopiedFormatKey((prev) => (prev === kind ? null : prev)), 2200);
+  };
+
   if (!user || !['admin', 'super_admin'].includes(user.role)) {
     return (
       <main className="max-w-3xl mx-auto px-6 py-24 text-center space-y-5">
@@ -337,20 +396,43 @@ export const AdminPanelView: React.FC = () => {
     }
   };
 
+  const resolveChallengeTitleForCoupon = (targetId?: string) => {
+    if (!targetId || targetId === 'ALL') return 'All Evaluations';
+    if (targetId.startsWith('TYPE:')) {
+      const t = targetId.slice(5);
+      if (t === 'one_step') return '1-Step Challenge Evaluations Only';
+      if (t === 'two_step') return '2-Step Challenge Evaluations Only';
+      if (t === 'three_step') return '3-Step Challenge Evaluations Only';
+      if (t === 'instant') return 'Instant Funding Evaluations Only';
+    }
+    if (targetId.startsWith('SIZE:')) {
+      const sz = Number(targetId.slice(5));
+      return Number.isFinite(sz) ? `$${sz.toLocaleString()} Evaluations Only` : targetId;
+    }
+    const found = challenges.find((c) => c.id === targetId);
+    if (found) return found.title;
+    return targetId;
+  };
+
   const handleCreateCoupon = (e: React.FormEvent) => {
     e.preventDefault();
     setCouponFeedback(null);
+    const effectiveTargetId = couponScopeMode === 'single' ? couponTargetChallengeId : 'ALL';
+    const effectiveTargetTitle = resolveChallengeTitleForCoupon(effectiveTargetId);
     const res = adminCreateCoupon({
       code: couponCodeInput,
       discountPct: couponDiscountInput,
       description: couponDescInput,
+      targetChallengeId: effectiveTargetId,
+      targetChallengeTitle: effectiveTargetTitle,
+      singleEvaluationOnly: couponSingleEvalOnly,
     });
     if (!res.ok) {
       setCouponFeedback({ type: 'err', msg: res.error || 'Could not create coupon.' });
     } else {
       setCouponFeedback({
         type: 'ok',
-        msg: `Coupon ${couponCodeInput.toUpperCase()} (${couponDiscountInput}% OFF) created!`,
+        msg: `Coupon ${couponCodeInput.toUpperCase()} (${couponDiscountInput}% OFF · ${effectiveTargetTitle}) created!`,
       });
       setCouponCodeInput('');
       setCouponDescInput('');
@@ -430,13 +512,20 @@ export const AdminPanelView: React.FC = () => {
         ? 'Two Step Challenge'
         : 'Three Step Challenge';
     const existingMatch = challenges.find((c) => c.type === chType && c.accountSize === chSize);
+    const chId = existingMatch ? existingMatch.id : `${chType.replace('_', '-')}-${chSize}`;
     const newCh: ChallengeTemplate = {
-      id: existingMatch ? existingMatch.id : `${chType.replace('_', '-')}-${chSize}`,
+      id: chId,
       title: chTitle,
       type: chType,
       typeLabel,
       accountSize: chSize,
       priceUsd: chPrice,
+      pointPrice: getChallengePointPrice({
+        id: chId,
+        type: chType,
+        accountSize: chSize,
+        pointPrice: existingMatch?.pointPrice,
+      }),
       startingBalance: chSize,
       profitTargetPct: chTarget,
       dailyDrawdownPct: chDailyDd,
@@ -756,7 +845,7 @@ export const AdminPanelView: React.FC = () => {
       </header>
 
       {/* Main Container - Full Width Spacious */}
-      <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div key={tab} className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-8 apex-tab-enter">
 
       {/* DEDICATED TAB: PER-ACCOUNT TERMINAL PASSWORDS GENERATOR & MANAGER */}
       {tab === 'terminal_passwords' && isFullAdmin && (
@@ -1751,12 +1840,12 @@ export const AdminPanelView: React.FC = () => {
 
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                Coupon Code (e.g., APEX30, VIP50, FREE100)
+                Coupon Code (e.g., 5K30OFF, APEX30, VIP50)
               </label>
               <input
                 type="text"
                 required
-                placeholder="APEX30"
+                placeholder="5K30OFF"
                 value={couponCodeInput}
                 onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[#030A07] border border-emerald-500/35 text-xs font-mono font-bold text-[#00FFA3] uppercase"
@@ -1778,13 +1867,130 @@ export const AdminPanelView: React.FC = () => {
               />
             </div>
 
+            {/* EVALUATION APPLICATION SCOPE SYSTEM (1 EVALUATION ONLY vs ALL EVALUATIONS) */}
+            <div className="p-3.5 rounded-2xl bg-[#030A07] border border-emerald-500/30 space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-white">
+                  Evaluation Application Mode
+                </span>
+                <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-emerald-500/15 text-[#00FFA3] border border-emerald-500/30">
+                  {couponScopeMode === 'single' ? 'Only 1 Evaluation' : 'All Evaluations'}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCouponScopeMode('single');
+                    if (!couponTargetChallengeId || couponTargetChallengeId === 'ALL') {
+                      setCouponTargetChallengeId('two-step-5000');
+                    }
+                  }}
+                  className={`py-2 px-2.5 rounded-xl text-[11px] font-bold border cursor-pointer transition-colors ${
+                    couponScopeMode === 'single'
+                      ? 'bg-emerald-500/20 border-[#00FFA3] text-[#00FFA3]'
+                      : 'bg-white/5 border-white/10 text-slate-300'
+                  }`}
+                >
+                  Apply Only 1 Evaluation
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCouponScopeMode('all')}
+                  className={`py-2 px-2.5 rounded-xl text-[11px] font-bold border cursor-pointer transition-colors ${
+                    couponScopeMode === 'all'
+                      ? 'bg-emerald-500/20 border-[#00FFA3] text-[#00FFA3]'
+                      : 'bg-white/5 border-white/10 text-slate-300'
+                  }`}
+                >
+                  All Evaluations
+                </button>
+              </div>
+
+              {couponScopeMode === 'single' && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                    Select Target Evaluation (Coupon valid ONLY on this 1 Evaluation)
+                  </label>
+                  <select
+                    aria-label="Select Target Evaluation for New Coupon"
+                    value={couponTargetChallengeId}
+                    onChange={(e) => setCouponTargetChallengeId(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl bg-[#06140E] border border-emerald-500/40 text-xs font-semibold text-[#00FFA3]"
+                  >
+                    <optgroup label="2-Step Classic Evaluation (1 Evaluation Only)">
+                      {challenges
+                        .filter((c) => c.type === 'two_step')
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.title} (${c.priceUsd})
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="1-Step Pro Evaluation (1 Evaluation Only)">
+                      {challenges
+                        .filter((c) => c.type === 'one_step')
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.title} (${c.priceUsd})
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="3-Step Institutional Evaluation (1 Evaluation Only)">
+                      {challenges
+                        .filter((c) => c.type === 'three_step')
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.title} (${c.priceUsd})
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="Instant Funding (1 Evaluation Only)">
+                      {challenges
+                        .filter((c) => c.type === 'instant')
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.title} (${c.priceUsd})
+                          </option>
+                        ))}
+                    </optgroup>
+                    <optgroup label="Program Model / Size Tier">
+                      <option value="SIZE:5000">Only $5,000 Starter Evaluations</option>
+                      <option value="SIZE:10000">Only $10,000 Evaluations</option>
+                      <option value="TYPE:two_step">Only 2-Step Evaluations</option>
+                      <option value="TYPE:one_step">Only 1-Step Evaluations</option>
+                      <option value="TYPE:three_step">Only 3-Step Evaluations</option>
+                      <option value="TYPE:instant">Only Instant Funding Evaluations</option>
+                    </optgroup>
+                  </select>
+                </div>
+              )}
+
+              <label className="flex items-center justify-between gap-2 pt-1 cursor-pointer">
+                <span className="text-[11px] font-semibold text-slate-300">
+                  Limit to 1 Evaluation Purchase Per Trader
+                </span>
+                <input
+                  type="checkbox"
+                  checked={couponSingleEvalOnly}
+                  onChange={(e) => setCouponSingleEvalOnly(e.target.checked)}
+                  className="w-4 h-4 accent-[#00FFA3] rounded cursor-pointer"
+                />
+              </label>
+            </div>
+
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 Description / Campaign Label
               </label>
               <input
                 type="text"
-                placeholder="30% Off All Two-Step Evaluations"
+                placeholder={
+                  couponScopeMode === 'single'
+                    ? `${couponDiscountInput}% Off Only on ${resolveChallengeTitleForCoupon(couponTargetChallengeId)}`
+                    : '30% Off All Evaluations'
+                }
                 value={couponDescInput}
                 onChange={(e) => setCouponDescInput(e.target.value)}
                 className="w-full px-3.5 py-2.5 rounded-xl bg-[#030A07] border border-emerald-500/35 text-xs text-white"
@@ -1801,55 +2007,170 @@ export const AdminPanelView: React.FC = () => {
           </form>
 
           <div className="lg:col-span-2 bg-[#06140E]/95 border border-emerald-500/30 rounded-3xl p-6 space-y-4 shadow-xl">
-            <h2 className="font-display text-lg font-extrabold text-white border-b border-emerald-500/20 pb-3">
-              Active &amp; Configured Checkout Coupon Codes
-            </h2>
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-emerald-500/20 pb-3">
+              <div>
+                <h2 className="font-display text-lg font-extrabold text-white">
+                  Active &amp; Configured Checkout Coupon Codes
+                </h2>
+                <p className="text-xs text-slate-400">
+                  Configure any coupon code below to apply to <strong className="text-[#00FFA3]">Only 1 Specific Evaluation</strong> or All Evaluations.
+                </p>
+              </div>
+              <span className="px-3 py-1 rounded-xl bg-emerald-500/15 border border-emerald-500/35 text-xs font-mono font-bold text-[#00FFA3]">
+                {adminCoupons.filter((c) => c.active).length} Active Codes
+              </span>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-              {adminCoupons.map((cp) => (
-                <div
-                  key={cp.id}
-                  className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
-                    cp.active
-                      ? 'bg-[#030A07] border-emerald-500/35'
-                      : 'bg-[#030A07]/50 border-white/10 opacity-60'
-                  }`}
-                >
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-sm font-black text-[#00FFA3] bg-emerald-500/15 px-2.5 py-0.5 rounded-lg border border-emerald-500/30">
-                        {cp.code}
-                      </span>
-                      <span className="font-mono text-xs font-extrabold text-white">
-                        {cp.discountPct}% OFF
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">{cp.description}</p>
-                  </div>
+              {adminCoupons.map((cp) => {
+                const currentTarget = cp.targetChallengeId || 'ALL';
+                const isSingleEvalTarget = currentTarget !== 'ALL';
+                const targetDisplayLabel = resolveChallengeTitleForCoupon(currentTarget);
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => adminToggleCoupon(cp.id)}
-                      className={`px-3 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer border ${
-                        cp.active
-                          ? 'bg-emerald-500/20 border-emerald-500/40 text-[#00FFA3]'
-                          : 'bg-white/5 border-white/15 text-slate-300'
-                      }`}
-                    >
-                      {cp.active ? 'Active' : 'Paused'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => adminDeleteCoupon(cp.id)}
-                      className="p-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 cursor-pointer"
-                      title="Delete Coupon"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                return (
+                  <div
+                    key={cp.id}
+                    className={`p-4 rounded-2xl border flex flex-col justify-between gap-3 ${
+                      cp.active
+                        ? 'bg-[#030A07] border-emerald-500/35'
+                        : 'bg-[#030A07]/50 border-white/10 opacity-60'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-sm font-black text-[#00FFA3] bg-emerald-500/15 px-2.5 py-0.5 rounded-lg border border-emerald-500/30">
+                            {cp.code}
+                          </span>
+                          <span className="font-mono text-xs font-extrabold text-white">
+                            {cp.discountPct}% OFF
+                          </span>
+                          <span
+                            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-md border ${
+                              isSingleEvalTarget
+                                ? 'bg-cyan-500/15 border-cyan-400/40 text-cyan-300'
+                                : 'bg-white/5 border-white/15 text-slate-300'
+                            }`}
+                          >
+                            {isSingleEvalTarget ? `1 EVAL ONLY: ${targetDisplayLabel}` : 'ALL EVALUATIONS'}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">{cp.description}</p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => adminToggleCoupon(cp.id)}
+                          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-bold cursor-pointer border ${
+                            cp.active
+                              ? 'bg-emerald-500/20 border-emerald-500/40 text-[#00FFA3]'
+                              : 'bg-white/5 border-white/15 text-slate-300'
+                          }`}
+                        >
+                          {cp.active ? 'Active' : 'Paused'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => adminDeleteCoupon(cp.id)}
+                          className="p-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 cursor-pointer"
+                          title={`Delete Coupon ${cp.code}`}
+                          aria-label={`Delete Coupon ${cp.code}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* INLINE ADMIN CONTROL: RESTRICT COUPON TO 1 SPECIFIC EVALUATION */}
+                    <div className="pt-2.5 border-t border-white/10 space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <label
+                          htmlFor={`coupon-target-${cp.id}`}
+                          className="text-[11px] font-bold text-slate-300"
+                        >
+                          Apply Only In Evaluation:
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            adminUpdateCoupon(cp.id, {
+                              singleEvaluationOnly: !cp.singleEvaluationOnly,
+                            })
+                          }
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold border cursor-pointer ${
+                            cp.singleEvaluationOnly
+                              ? 'bg-emerald-500/20 border-emerald-500/40 text-[#00FFA3]'
+                              : 'bg-white/5 border-white/15 text-slate-400'
+                          }`}
+                        >
+                          {cp.singleEvaluationOnly ? '1 Use / Trader: ON' : '1 Use / Trader: OFF'}
+                        </button>
+                      </div>
+
+                      <select
+                        id={`coupon-target-${cp.id}`}
+                        aria-label={`Target Evaluation for ${cp.code}`}
+                        value={currentTarget}
+                        onChange={(e) => {
+                          const nextTarget = e.target.value;
+                          adminUpdateCoupon(cp.id, {
+                            targetChallengeId: nextTarget,
+                            targetChallengeTitle: resolveChallengeTitleForCoupon(nextTarget),
+                          });
+                        }}
+                        className="w-full px-3 py-2 rounded-xl bg-[#06140E] border border-emerald-500/35 text-xs font-semibold text-[#00FFA3]"
+                      >
+                        <option value="ALL">All Evaluations (Universal — $5K to $200K)</option>
+                        <optgroup label="2-Step Classic Evaluation (1 Evaluation Only)">
+                          {challenges
+                            .filter((c) => c.type === 'two_step')
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                Only: {c.title} (${c.priceUsd})
+                              </option>
+                            ))}
+                        </optgroup>
+                        <optgroup label="1-Step Pro Evaluation (1 Evaluation Only)">
+                          {challenges
+                            .filter((c) => c.type === 'one_step')
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                Only: {c.title} (${c.priceUsd})
+                              </option>
+                            ))}
+                        </optgroup>
+                        <optgroup label="3-Step Institutional Evaluation (1 Evaluation Only)">
+                          {challenges
+                            .filter((c) => c.type === 'three_step')
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                Only: {c.title} (${c.priceUsd})
+                              </option>
+                            ))}
+                        </optgroup>
+                        <optgroup label="Instant Funding (1 Evaluation Only)">
+                          {challenges
+                            .filter((c) => c.type === 'instant')
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                Only: {c.title} (${c.priceUsd})
+                              </option>
+                            ))}
+                        </optgroup>
+                        <optgroup label="Program Model / Size Tier">
+                          <option value="SIZE:5000">Only: $5,000 Starter Evaluations</option>
+                          <option value="SIZE:10000">Only: $10,000 Evaluations</option>
+                          <option value="TYPE:two_step">Only: 2-Step Evaluations</option>
+                          <option value="TYPE:one_step">Only: 1-Step Evaluations</option>
+                          <option value="TYPE:three_step">Only: 3-Step Evaluations</option>
+                          <option value="TYPE:instant">Only: Instant Funding Evaluations</option>
+                        </optgroup>
+                      </select>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </section>
@@ -2178,12 +2499,13 @@ export const AdminPanelView: React.FC = () => {
                 </div>
               )}
 
-              {/* Registered Users Table with Direct ADMIN: YES / NO Toggle */}
+              {/* Registered Users Table with Direct ADMIN: YES / NO Toggle & Affiliate Points Controls */}
               <div className="overflow-x-auto border border-emerald-500/25 rounded-2xl bg-[#030A07]">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-emerald-500/20 text-[11px] font-mono uppercase text-slate-400">
                       <th className="py-3 px-4">User / Email</th>
+                      <th className="py-3 px-4">Affiliate Points &amp; Code</th>
                       <th className="py-3 px-4">Password</th>
                       <th className="py-3 px-4 text-center">Admin Access (YES / NO)</th>
                       <th className="py-3 px-4 text-right">Actions</th>
@@ -2192,11 +2514,45 @@ export const AdminPanelView: React.FC = () => {
                   <tbody className="divide-y divide-emerald-500/15 text-xs">
                     {allUsers.map((u) => {
                       const isUserAdmin = u.role === 'admin' || u.role === 'super_admin';
+                      const refCount = allUsers.filter(
+                        (other) =>
+                          other.uid !== u.uid &&
+                          (other.referredBy || '').trim().toUpperCase() ===
+                            (u.referralCode || '').trim().toUpperCase()
+                      ).length;
                       return (
                         <tr key={u.uid} className="hover:bg-emerald-500/5">
                           <td className="py-3 px-4">
                             <div className="font-display font-bold text-white">{u.fullName}</div>
                             <div className="font-mono text-[11px] text-[#00FFA3]">{u.email}</div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 font-mono font-extrabold text-[#00FFA3]">
+                                {u.rewardPoints || 0} PTS
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-400">
+                                ({refCount} Refs · {u.referralCode})
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-1 mt-1.5">
+                              <button
+                                type="button"
+                                onClick={() => adminAdjustUserPoints(u.uid, 10, 'add')}
+                                className="px-2 py-0.5 rounded bg-[#06140E] hover:bg-emerald-500/20 border border-emerald-500/35 text-[10px] font-mono font-bold text-[#00FFA3] cursor-pointer"
+                                title="Credit +10 Affiliate Points (1 Referral)"
+                              >
+                                +10 PTS
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => adminAdjustUserPoints(u.uid, 110, 'add')}
+                                className="px-2 py-0.5 rounded bg-[#06140E] hover:bg-emerald-500/20 border border-emerald-500/35 text-[10px] font-mono font-bold text-amber-300 cursor-pointer"
+                                title="Credit +110 Affiliate Points ($5K 2-Step Price)"
+                              >
+                                +110 PTS ($5K)
+                              </button>
+                            </div>
                           </td>
                           <td className="py-3 px-4 font-mono text-xs text-slate-300">
                             {u.passwordHash ? 'Verified Hash' : '••••••••'}
@@ -2266,8 +2622,8 @@ export const AdminPanelView: React.FC = () => {
 
           {/* PASSWORD RESET MODAL */}
           {resetTargetUser && (
-            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="w-full max-w-md bg-[#06140E] border border-emerald-500/45 rounded-3xl p-6 space-y-4 shadow-2xl">
+            <div className="fixed inset-0 z-50 bg-black/80 apex-backdrop-enter flex items-center justify-center p-4">
+              <div className="w-full max-w-md bg-[#06140E] border border-emerald-500/45 rounded-3xl p-6 space-y-4 shadow-2xl apex-scale-in">
                 <div className="flex items-center justify-between border-b border-emerald-500/20 pb-3">
                   <h3 className="font-display text-base font-extrabold text-white">
                     Update Password for {resetTargetUser.fullName}
@@ -3180,7 +3536,7 @@ export const AdminPanelView: React.FC = () => {
             </div>
 
             {/* Sub-tab pills */}
-            <div className="inline-flex p-1 rounded-2xl bg-[#030A07] border border-emerald-500/30 shrink-0">
+            <div className="inline-flex flex-wrap p-1 rounded-2xl bg-[#030A07] border border-emerald-500/30 gap-1 shrink-0">
               <button
                 type="button"
                 onClick={() => setEmailSubTab('manual')}
@@ -3191,7 +3547,19 @@ export const AdminPanelView: React.FC = () => {
                 }`}
               >
                 <Send className="w-3.5 h-3.5" />
-                <span>Manual Professional Composer</span>
+                <span>Manual Composer</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setEmailSubTab('formats')}
+                className={`px-4 py-2 rounded-xl text-xs font-display font-extrabold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  emailSubTab === 'formats'
+                    ? 'bg-gradient-to-r from-[#00FFA3] to-[#10B981] text-[#02120A] shadow-[0_0_15px_rgba(0,255,163,0.3)]'
+                    : 'text-slate-300 hover:text-white'
+                }`}
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Email Formats ({ADMIN_EMAIL_FORMATS.length})</span>
               </button>
               <button
                 type="button"
@@ -4112,6 +4480,452 @@ export const AdminPanelView: React.FC = () => {
               </div>
             </div>
           )}
+
+          {/* SUB-TAB 3: ADMIN-ONLY EDITABLE & COPYABLE EMAIL FORMATS HUB */}
+          {emailSubTab === 'formats' && (() => {
+            const activeFormat =
+              ADMIN_EMAIL_FORMATS.find((f) => f.id === selectedFormatId) || ADMIN_EMAIL_FORMATS[0];
+            const fullCopyPayload = `Subject: ${formatSubjectDraft}\n\n${formatBodyDraft}\n\n${activeFormat.ctaLabel} ${activeFormat.ctaUrl}`;
+
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left Column: Template Picker & Variable Auto-Fill */}
+                <div className="lg:col-span-5 bg-[#06140E]/95 border border-emerald-500/35 rounded-3xl p-5 sm:p-6 space-y-5 shadow-xl h-fit">
+                  <div className="border-b border-emerald-500/20 pb-3">
+                    <h3 className="font-display text-base font-extrabold text-white flex items-center gap-2">
+                      <Copy className="w-4 h-4 text-[#00FFA3]" />
+                      <span>All Official Admin Email Formats ({ADMIN_EMAIL_FORMATS.length})</span>
+                    </h3>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Pick any scenario format, auto-fill or customize details, edit text freely, and copy to send from Gmail or load into Manual Composer.
+                    </p>
+                  </div>
+
+                  {/* Template List */}
+                  <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                    {ADMIN_EMAIL_FORMATS.map((fmt) => {
+                      const isSelected = fmt.id === activeFormat.id;
+                      return (
+                        <button
+                          key={fmt.id}
+                          type="button"
+                          onClick={() => applyEmailFormatSelection(fmt.id, formatVars)}
+                          className={`w-full text-left p-3 rounded-2xl border transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#082218] border-[#00FFA3] shadow-[0_0_14px_rgba(0,255,163,0.18)]'
+                              : 'bg-[#030A07] border-emerald-500/20 hover:border-emerald-500/45'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className="text-xs font-display font-extrabold text-white">
+                              {fmt.title}
+                            </span>
+                            <span
+                              className="px-2 py-0.5 rounded-full text-[9px] font-mono font-extrabold uppercase border shrink-0"
+                              style={{
+                                color: fmt.badgeColor,
+                                borderColor: `${fmt.badgeColor}55`,
+                                backgroundColor: `${fmt.badgeColor}15`,
+                              }}
+                            >
+                              {fmt.category}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 leading-snug">{fmt.description}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Quick Auto-Fill From Real User / Account */}
+                  <div className="pt-3 border-t border-emerald-500/20 space-y-3">
+                    <div className="text-[11px] font-mono font-bold text-[#00FFA3] uppercase flex items-center gap-1.5">
+                      <UserCheck className="w-3.5 h-3.5" />
+                      <span>Quick Auto-Fill From Registered Trader / Account</span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Select Trader
+                        </label>
+                        <select
+                          aria-label="Select Trader for Email Format"
+                          value={formatTraderUid}
+                          onChange={(e) => {
+                            const uid = e.target.value;
+                            setFormatTraderUid(uid);
+                            const foundUser = allUsers.find((u) => u.uid === uid);
+                            const foundAcc = allAccounts.find((a) => a.userId === uid);
+                            setFormatAccountId(foundAcc?.id || '');
+                            const nextVars: AdminEmailFormatVars = {
+                              ...formatVars,
+                              traderName: foundUser?.fullName || '',
+                              traderEmail: foundUser?.email || '',
+                              ...(foundAcc
+                                ? {
+                                    accountNumber: foundAcc.accountNumber,
+                                    challengeTitle: foundAcc.challengeTitle,
+                                    accountSize: `$${foundAcc.startingBalance.toLocaleString()}`,
+                                    terminalUserId: foundAcc.terminalUserId || '',
+                                    terminalPassword: foundAcc.terminalPassword || '',
+                                    stepInfo: `Step ${foundAcc.currentStep} of ${foundAcc.totalSteps}`,
+                                  }
+                                : {}),
+                            };
+                            applyEmailFormatSelection(activeFormat.id, nextVars);
+                          }}
+                          className="w-full px-3 py-2 rounded-xl bg-[#030A07] border border-emerald-500/35 text-xs text-white outline-none"
+                        >
+                          <option value="">-- Optional: Pick Trader --</option>
+                          {allUsers.map((u) => (
+                            <option key={u.uid} value={u.uid}>
+                              {u.fullName} ({u.email})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Select Trading Account
+                        </label>
+                        <select
+                          aria-label="Select Account for Email Format"
+                          value={formatAccountId}
+                          onChange={(e) => {
+                            const accId = e.target.value;
+                            setFormatAccountId(accId);
+                            const foundAcc = allAccounts.find((a) => a.id === accId);
+                            if (!foundAcc) return;
+                            const owner = allUsers.find((u) => u.uid === foundAcc.userId);
+                            setFormatTraderUid(owner?.uid || formatTraderUid);
+                            const nextVars: AdminEmailFormatVars = {
+                              ...formatVars,
+                              traderName: owner?.fullName || formatVars.traderName || '',
+                              traderEmail: owner?.email || formatVars.traderEmail || '',
+                              accountNumber: foundAcc.accountNumber,
+                              challengeTitle: foundAcc.challengeTitle,
+                              accountSize: `$${foundAcc.startingBalance.toLocaleString()}`,
+                              terminalUserId: foundAcc.terminalUserId || '',
+                              terminalPassword: foundAcc.terminalPassword || '',
+                              stepInfo: `Step ${foundAcc.currentStep} of ${foundAcc.totalSteps}`,
+                            };
+                            applyEmailFormatSelection(activeFormat.id, nextVars);
+                          }}
+                          className="w-full px-3 py-2 rounded-xl bg-[#030A07] border border-emerald-500/35 text-xs text-white outline-none"
+                        >
+                          <option value="">-- Optional: Pick Account --</option>
+                          {allAccounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              #{acc.accountNumber} · {acc.challengeTitle} (${acc.startingBalance.toLocaleString()})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Editable Variable Inputs */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Trader Name
+                        </label>
+                        <input
+                          type="text"
+                          value={formatVars.traderName || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              traderName: e.target.value,
+                            })
+                          }
+                          placeholder="e.g. Rahul Sharma"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs text-white outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Trader Email
+                        </label>
+                        <input
+                          type="email"
+                          value={formatVars.traderEmail || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              traderEmail: e.target.value,
+                            })
+                          }
+                          placeholder="trader@email.com"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs text-white outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Account #
+                        </label>
+                        <input
+                          type="text"
+                          value={formatVars.accountNumber || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              accountNumber: e.target.value,
+                            })
+                          }
+                          placeholder="FA-882410"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs font-mono text-[#00FFA3] outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Amount (USD)
+                        </label>
+                        <input
+                          type="text"
+                          value={formatVars.amountUsd || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              amountUsd: e.target.value,
+                            })
+                          }
+                          placeholder="$1,250.00 USD"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs font-mono text-white outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Wallet / Destination
+                        </label>
+                        <input
+                          type="text"
+                          value={formatVars.walletAddress || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              walletAddress: e.target.value,
+                            })
+                          }
+                          placeholder="0x... USDT BEP-20"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs font-mono text-white outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Reason / Note / Tx ID
+                        </label>
+                        <input
+                          type="text"
+                          value={formatVars.reason || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              reason: e.target.value,
+                            })
+                          }
+                          placeholder="Reason or TX reference"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs text-white outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Promo Code / Discount
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            type="text"
+                            value={formatVars.promoCode || ''}
+                            onChange={(e) =>
+                              applyEmailFormatSelection(activeFormat.id, {
+                                ...formatVars,
+                                promoCode: e.target.value,
+                              })
+                            }
+                            placeholder="APEX20"
+                            className="w-1/2 px-2.5 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs font-mono text-white outline-none focus:border-[#00FFA3]"
+                          />
+                          <input
+                            type="text"
+                            value={formatVars.discountPct || ''}
+                            onChange={(e) =>
+                              applyEmailFormatSelection(activeFormat.id, {
+                                ...formatVars,
+                                discountPct: e.target.value,
+                              })
+                            }
+                            placeholder="20%"
+                            className="w-1/2 px-2.5 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs font-mono text-white outline-none focus:border-[#00FFA3]"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-mono text-slate-400 uppercase mb-1">
+                          Step / Phase Info
+                        </label>
+                        <input
+                          type="text"
+                          value={formatVars.stepInfo || ''}
+                          onChange={(e) =>
+                            applyEmailFormatSelection(activeFormat.id, {
+                              ...formatVars,
+                              stepInfo: e.target.value,
+                            })
+                          }
+                          placeholder="Step 1 of 2"
+                          className="w-full px-3 py-1.5 rounded-xl bg-[#030A07] border border-emerald-500/30 text-xs text-white outline-none focus:border-[#00FFA3]"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column: Editable Subject & Body + Copy / Load Actions */}
+                <div className="lg:col-span-7 bg-[#06140E]/95 border border-emerald-500/35 rounded-3xl p-5 sm:p-6 space-y-4 shadow-xl">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-500/20 pb-3">
+                    <div>
+                      <div className="text-[10px] font-mono font-extrabold text-[#00FFA3] uppercase">
+                        {activeFormat.category} FORMAT • ADMIN ONLY
+                      </div>
+                      <h3 className="font-display text-lg font-extrabold text-white">
+                        {activeFormat.title}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => applyEmailFormatSelection(activeFormat.id, formatVars)}
+                      className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/15 text-[11px] font-bold text-slate-200 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                      <span>Reset Format</span>
+                    </button>
+                  </div>
+
+                  {/* Editable Subject Line */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[11px] font-mono font-bold text-slate-300 uppercase">
+                        Editable Email Subject
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => copyFormatText('subject', formatSubjectDraft)}
+                        className="px-2.5 py-1 rounded-lg bg-[#030A07] hover:bg-emerald-500/15 border border-emerald-500/35 text-[11px] font-bold text-[#00FFA3] cursor-pointer inline-flex items-center gap-1"
+                      >
+                        {copiedFormatKey === 'subject' ? (
+                          <>
+                            <Check className="w-3 h-3" />
+                            <span>Subject Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copy Subject</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      aria-label="Editable Email Format Subject"
+                      value={formatSubjectDraft}
+                      onChange={(e) => setFormatSubjectDraft(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl bg-[#030A07] border border-emerald-500/35 text-xs sm:text-sm font-bold text-white outline-none focus:border-[#00FFA3]"
+                    />
+                  </div>
+
+                  {/* Editable Message Body */}
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-[11px] font-mono font-bold text-slate-300 uppercase">
+                        Editable Email Message Body
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => copyFormatText('body', formatBodyDraft)}
+                        className="px-2.5 py-1 rounded-lg bg-[#030A07] hover:bg-emerald-500/15 border border-emerald-500/35 text-[11px] font-bold text-[#00FFA3] cursor-pointer inline-flex items-center gap-1"
+                      >
+                        {copiedFormatKey === 'body' ? (
+                          <>
+                            <Check className="w-3 h-3" />
+                            <span>Body Copied</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            <span>Copy Body</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <textarea
+                      aria-label="Editable Email Format Body"
+                      rows={11}
+                      value={formatBodyDraft}
+                      onChange={(e) => setFormatBodyDraft(e.target.value)}
+                      className="w-full px-3.5 py-3 rounded-xl bg-[#030A07] border border-emerald-500/35 text-xs sm:text-sm text-slate-100 leading-relaxed font-mono outline-none focus:border-[#00FFA3]"
+                    />
+                  </div>
+
+                  {/* Copy Full Email + Load into Manual Composer */}
+                  <div className="pt-2 flex flex-wrap items-center justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => copyFormatText('full', fullCopyPayload)}
+                      className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#00FFA3] to-[#10B981] text-[#02120A] font-display font-extrabold text-xs uppercase tracking-wide cursor-pointer inline-flex items-center gap-2 shadow-[0_0_18px_rgba(0,255,163,0.3)]"
+                    >
+                      {copiedFormatKey === 'full' ? (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Full Email Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-4 h-4" />
+                          <span>Copy Full Email (Subject + Body + CTA)</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const rendered = renderAdminEmailFormat(activeFormat.id, formatVars);
+                        setManualSubject(formatSubjectDraft);
+                        setManualBody(formatBodyDraft);
+                        setManualHeadline(rendered.headline);
+                        setManualBadgeText(activeFormat.badgeText);
+                        setManualBadgeColor(activeFormat.badgeColor);
+                        setManualCtaLabel(activeFormat.ctaLabel);
+                        setManualCtaUrl(activeFormat.ctaUrl);
+                        if (formatVars.traderEmail?.trim()) {
+                          setManualRecipientType('custom');
+                          setManualRecipientEmail(formatVars.traderEmail.trim());
+                          setManualRecipientName(formatVars.traderName?.trim() || 'Trader');
+                        }
+                        if (formatVars.accountNumber?.trim()) {
+                          setManualHighlight1Label('ACCOUNT NUMBER');
+                          setManualHighlight1Value(formatVars.accountNumber.trim());
+                        }
+                        if (formatVars.amountUsd?.trim() || formatVars.reason?.trim()) {
+                          setManualHighlight2Label(formatVars.amountUsd?.trim() ? 'AMOUNT' : 'DETAILS');
+                          setManualHighlight2Value(
+                            formatVars.amountUsd?.trim() || formatVars.reason?.trim() || 'VERIFIED'
+                          );
+                        }
+                        setEmailSubTab('manual');
+                      }}
+                      className="px-4 py-2.5 rounded-xl bg-[#082218] hover:bg-emerald-500/20 border border-[#00FFA3]/50 text-[#00FFA3] font-display font-extrabold text-xs uppercase tracking-wide cursor-pointer inline-flex items-center gap-2"
+                    >
+                      <Send className="w-4 h-4" />
+                      <span>Load into Manual Composer →</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </section>
       )}
 

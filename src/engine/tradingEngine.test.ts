@@ -6,10 +6,13 @@ import {
   validateOrderRequest,
   evaluateOrderTrigger,
   evaluateAccountRiskMetrics,
+  getMarketStatus,
   type TradingAccountRecord,
   type MarketQuote,
   type TradeOrderRecord,
 } from './tradingEngine';
+
+const OPEN_MARKET_MS = Date.UTC(2026, 10, 11, 14, 0, 0); // Wednesday 14:00 UTC (Markets Open)
 
 const sampleAccount: TradingAccountRecord = {
   id: 'acc-1',
@@ -70,7 +73,7 @@ test('calculatePositionPnl computes accurate gross, commission, and net P&L for 
 });
 
 test('validateOrderRequest validates SL/TP direction and margin limits', () => {
-  // Valid market BUY
+  // Valid market BUY (during open institutional weekday session)
   const validRes = validateOrderRequest(
     {
       accountId: 'acc-1',
@@ -82,7 +85,8 @@ test('validateOrderRequest validates SL/TP direction and margin limits', () => {
       takeProfit: 2770.0,
     },
     sampleAccount,
-    xauQuote
+    xauQuote,
+    OPEN_MARKET_MS
   );
   assert.equal(validRes.valid, true);
   assert.equal(validRes.executionPrice, 2748.74);
@@ -98,7 +102,8 @@ test('validateOrderRequest validates SL/TP direction and margin limits', () => {
       stopLoss: 2760.0,
     },
     sampleAccount,
-    xauQuote
+    xauQuote,
+    OPEN_MARKET_MS
   );
   assert.equal(invalidSl.valid, false);
 
@@ -113,7 +118,8 @@ test('validateOrderRequest validates SL/TP direction and margin limits', () => {
       entryPrice: 2755.0,
     },
     sampleAccount,
-    xauQuote
+    xauQuote,
+    OPEN_MARKET_MS
   );
   assert.equal(invalidLimit.valid, false);
 });
@@ -141,7 +147,7 @@ test('evaluateOrderTrigger triggers pending orders and SL/TP accurately', () => 
     closeTime: '',
   };
 
-  const triggerPending = evaluateOrderTrigger(pendingBuyLimit, xauQuote);
+  const triggerPending = evaluateOrderTrigger(pendingBuyLimit, xauQuote, OPEN_MARKET_MS);
   assert.equal(triggerPending.action, 'ACTIVATE_PENDING');
 
   const openBuyOrder: TradeOrderRecord = {
@@ -150,7 +156,7 @@ test('evaluateOrderTrigger triggers pending orders and SL/TP accurately', () => 
     entryPrice: 2740.0,
     takeProfit: 2748.0,
   };
-  const triggerTp = evaluateOrderTrigger(openBuyOrder, xauQuote);
+  const triggerTp = evaluateOrderTrigger(openBuyOrder, xauQuote, OPEN_MARKET_MS);
   assert.equal(triggerTp.action, 'CLOSE_TP');
 });
 
@@ -369,12 +375,56 @@ test('computeStripeCheckoutBreakdown and verifyUserCredentials enforce strict au
       discountPct: 30,
       description: '30% Off Evaluation',
       active: true,
+      targetChallengeId: 'ALL',
+      createdAt: new Date().toISOString(),
+    },
+    {
+      id: 'adm-cpn-5k',
+      code: '5K30OFF',
+      discountPct: 30,
+      description: '$5K Starter Challenge Promo — Only on $5K 2-Step Evaluation',
+      active: true,
+      targetChallengeId: 'two-step-5000',
+      targetChallengeTitle: '$5,000 Two Step Challenge',
+      singleEvaluationOnly: true,
       createdAt: new Date().toISOString(),
     },
   ];
   const validAdminCoupon = computeStripeCheckoutBreakdown(ch100k, 'apex30', [], adminCoupons);
   assert.equal(validAdminCoupon.validCode, true);
   assert.equal(validAdminCoupon.discountPct, 30);
+
+  // Single-evaluation restricted coupon (5K30OFF -> two-step-5000) succeeds ONLY on $5K Two Step Challenge
+  const valid5kOnly = computeStripeCheckoutBreakdown(ch5k, '5K30OFF', [], adminCoupons);
+  assert.equal(valid5kOnly.validCode, true);
+  assert.equal(valid5kOnly.discountPct, 30);
+  assert.equal(valid5kOnly.finalAmountUsd, 11.9);
+
+  // Single-evaluation restricted coupon (5K30OFF) MUST be rejected on other evaluations ($100K Two Step or $5K Instant)
+  const rejectedOn100k = computeStripeCheckoutBreakdown(ch100k, '5K30OFF', [], adminCoupons);
+  assert.equal(rejectedOn100k.validCode, false);
+  assert.equal(rejectedOn100k.discountPct, 0);
+  assert.ok(rejectedOn100k.errorMessage?.includes('$5,000 Two Step Challenge'));
+
+  const chInstant5k = INITIAL_CHALLENGES.find((c) => c.id === 'instant-5000')!;
+  const rejectedOnInstant5k = computeStripeCheckoutBreakdown(
+    chInstant5k,
+    '5K30OFF',
+    [],
+    adminCoupons
+  );
+  assert.equal(rejectedOnInstant5k.validCode, false);
+
+  // Single-evaluation per-trader limit blocks repeat use when alreadyUsedCodesByUser contains the code
+  const rejectedSecondUse = computeStripeCheckoutBreakdown(
+    ch5k,
+    '5K30OFF',
+    [],
+    adminCoupons,
+    ['5K30OFF']
+  );
+  assert.equal(rejectedSecondUse.validCode, false);
+  assert.ok(rejectedSecondUse.errorMessage?.includes('limited to 1 evaluation'));
 
   // Stripe card validation
   const validCard = validateStripeCardInput({
@@ -502,17 +552,19 @@ test('evaluateAccountPayoutEligibility enforces Instant vs 2-Step/3-Step complet
   const twoStepActiveElig = evaluateAccountPayoutEligibility(twoStepActive, []);
   assert.equal(twoStepActiveElig.eligible, false);
 
-  // 4. 2-Step Evaluation account after passing both steps ('passed') with positive P&L -> Eligible!
+  // 4. 2-Step Evaluation account after passing both steps (+8% Step 1 & +5% Step 2 = +13% -> $56,500) -> Eligible!
   const twoStepPassed: TradingAccountRecord = {
     ...twoStepActive,
     currentStep: 2,
+    balance: 56500,
+    equity: 56500,
     status: 'passed',
   };
   const twoStepPassedElig = evaluateAccountPayoutEligibility(twoStepPassed, []);
   assert.equal(twoStepPassedElig.eligible, true);
-  assert.equal(twoStepPassedElig.maxWithdrawableUsd, 4050); // 90% of $4,500
+  assert.equal(twoStepPassedElig.maxWithdrawableUsd, 5850); // 90% of $6,500
 
-  // 5. 3-Step Evaluation account ('three_step') active vs passed
+  // 5. 3-Step Evaluation account ('three_step') active vs passed (+6% * 3 = +18% -> $118,000)
   const threeStepActive: TradingAccountRecord = {
     ...sampleAccount,
     challengeType: 'three_step',
@@ -529,11 +581,13 @@ test('evaluateAccountPayoutEligibility enforces Instant vs 2-Step/3-Step complet
   const threeStepPassed: TradingAccountRecord = {
     ...threeStepActive,
     currentStep: 3,
+    balance: 118000,
+    equity: 118000,
     status: 'passed',
   };
   const threeStepPassedElig = evaluateAccountPayoutEligibility(threeStepPassed, []);
   assert.equal(threeStepPassedElig.eligible, true);
-  assert.equal(threeStepPassedElig.maxWithdrawableUsd, 5700); // 95% of $6,000
+  assert.equal(threeStepPassedElig.maxWithdrawableUsd, 17100); // 95% of $18,000 (+18% cumulative)
 
   // 6. Passed account that subsequently hits Maximum or Daily Drawdown -> Auto-breaches to 'failed' and blocks payouts
   const breachedMetrics = evaluateAccountRiskMetrics(
@@ -730,12 +784,16 @@ test('profitable accounts never breach and Instant accounts enforce 15% consiste
     ...instantAcc,
     id: 'acc-2s-cons',
     challengeType: 'two_step',
+    currentStep: 2,
+    totalSteps: 2,
+    balance: 11300,
+    equity: 11300,
     status: 'passed',
   };
   const twoStepElig = evaluateAccountPayoutEligibility(
     twoStepPassedAcc,
     [],
-    [{ ...bigClosedTrade, accountId: 'acc-2s-cons' }]
+    [{ ...bigClosedTrade, accountId: 'acc-2s-cons', netPnl: 1300 }]
   );
   assert.equal(twoStepElig.isConsistencyViolated, false);
   assert.equal(twoStepElig.eligible, true);
@@ -1312,7 +1370,953 @@ test('all challenge programs strictly enforce evaluation gates, open position lo
   assert.equal(instantConsistentElig.eligible, true);
 });
 
+test('validateAndComputeSlTpPreview rejects invalid BUY/SELL SL/TP on manual submit and clamps cleanly on chart drag', async () => {
+  const { validateAndComputeSlTpPreview, computeSlTpPresets } = await import('./tradingEngine');
 
+  // Invalid BUY SL above current live Bid (manual modal should reject)
+  const badBuySl = validateAndComputeSlTpPreview({
+    symbol: 'EURUSD',
+    side: 'BUY',
+    volume: 1,
+    referencePrice: 1.1,
+    liveBid: 1.1005,
+    liveAsk: 1.1006,
+    stopLoss: 1.102,
+    takeProfit: 1.11,
+    isOpenPosition: true,
+    allowAutoClamp: false,
+  });
+  assert.equal(badBuySl.valid, false);
+  assert.ok((badBuySl.error || '').includes('below'));
 
+  // Invalid BUY TP below current live Bid (manual modal should reject)
+  const badBuyTp = validateAndComputeSlTpPreview({
+    symbol: 'EURUSD',
+    side: 'BUY',
+    volume: 1,
+    referencePrice: 1.1,
+    liveBid: 1.1005,
+    liveAsk: 1.1006,
+    stopLoss: 1.095,
+    takeProfit: 1.099,
+    isOpenPosition: true,
+    allowAutoClamp: false,
+  });
+  assert.equal(badBuyTp.valid, false);
+  assert.ok((badBuyTp.error || '').includes('above'));
 
+  // Chart drag (allowAutoClamp: true) clamps BUY SL just below liveBid safely
+  const clampedBuySl = validateAndComputeSlTpPreview({
+    symbol: 'EURUSD',
+    side: 'BUY',
+    volume: 1,
+    referencePrice: 1.1,
+    liveBid: 1.1005,
+    liveAsk: 1.1006,
+    stopLoss: 1.102,
+    takeProfit: 1.1055,
+    isOpenPosition: true,
+    allowAutoClamp: true,
+  });
+  assert.equal(clampedBuySl.valid, true);
+  assert.ok(clampedBuySl.stopLoss < 1.1005);
 
+  // Valid SELL SL/TP computes accurate riskUsd, rewardUsd, rrRatio
+  const validSell = validateAndComputeSlTpPreview({
+    symbol: 'XAUUSD',
+    side: 'SELL',
+    volume: 0.5,
+    referencePrice: 2740,
+    liveBid: 2740,
+    liveAsk: 2740.3,
+    stopLoss: 2750,
+    takeProfit: 2720,
+    isOpenPosition: true,
+    allowAutoClamp: false,
+  });
+  assert.equal(validSell.valid, true);
+  assert.equal(validSell.riskUsd, 500);
+  assert.equal(validSell.rewardUsd, 1000);
+  assert.equal(validSell.rrRatio, 2);
+
+  // Presets compute $50 SL, 1:2 R:R TP, and Breakeven SL
+  const presets = computeSlTpPresets({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    volume: 0.5,
+    entryPrice: 2740,
+    liveBid: 2740.5,
+    liveAsk: 2740.8,
+    currentSl: 2739,
+    isOpenPosition: true,
+  });
+  assert.equal(presets.riskUsdPresets.find((p) => p.riskUsd === 50)?.slPrice, 2739);
+  assert.equal(presets.rrPresets.find((p) => p.ratio === 2)?.tpPrice, 2742);
+  assert.equal(presets.breakevenSl, 2740);
+});
+
+test('ADMIN_EMAIL_FORMATS includes all required formats and renders substituted placeholders cleanly', async () => {
+  const { ADMIN_EMAIL_FORMATS, renderAdminEmailFormat } = await import('./cloudFunctionsEmail');
+
+  const ids = ADMIN_EMAIL_FORMATS.map((f) => f.id);
+  for (const requiredId of [
+    'welcome_registration',
+    'challenge_purchase_pending',
+    'terminal_credentials',
+    'phase_passed',
+    'funded_account_activated',
+    'payout_approved',
+    'payout_rejected',
+    'account_breached',
+    'password_reset',
+    'vip_promo_notice',
+  ]) {
+    assert.ok(ids.includes(requiredId), `Missing email format: ${requiredId}`);
+  }
+
+  const renderedPayout = renderAdminEmailFormat('payout_rejected', {
+    traderName: 'Aarav Patel',
+    accountNumber: 'FA-900112',
+    challengeTitle: '$50K Two-Step',
+    amountUsd: '$1,400.00 USD',
+    walletAddress: '0xAbCdEf123456',
+    reason: 'Wrong BEP-20 network wallet tag',
+  });
+  assert.ok(renderedPayout.subject.includes('FA-900112'));
+  assert.ok(renderedPayout.bodyText.includes('Aarav Patel'));
+  assert.ok(renderedPayout.bodyText.includes('$1,400.00 USD'));
+  assert.ok(renderedPayout.bodyText.includes('0xAbCdEf123456'));
+  assert.ok(renderedPayout.bodyText.includes('Wrong BEP-20 network wallet tag'));
+  assert.ok(renderedPayout.fullCopyText.includes('Subject:'));
+});
+
+test('1-Step evaluation enforces +10% target and blocks payouts while positions are open', async () => {
+  const { evaluateAccountRiskMetrics, evaluateAccountPayoutEligibility } = await import('./tradingEngine');
+
+  const oneStepHalfway: TradingAccountRecord = {
+    ...sampleAccount,
+    id: 'acc-1step-1',
+    challengeId: 'one-step-50000',
+    challengeType: 'one_step',
+    startingBalance: 50000,
+    phaseStartingBalance: 50000,
+    balance: 54000,
+    equity: 54000,
+    currentStep: 1,
+    totalSteps: 1,
+    profitTargetPct: 10,
+    status: 'active',
+  };
+  assert.equal(evaluateAccountRiskMetrics(oneStepHalfway, []).stepCompleted, false);
+  assert.equal(evaluateAccountPayoutEligibility(oneStepHalfway, []).eligible, false);
+
+  const oneStepPassed: TradingAccountRecord = {
+    ...oneStepHalfway,
+    balance: 55000,
+    equity: 55000,
+    status: 'passed',
+  };
+  assert.equal(evaluateAccountPayoutEligibility(oneStepPassed, []).eligible, true);
+
+  // Even when funded/passed, an open position blocks payout until closed
+  const openPos: TradeOrderRecord = {
+    id: 'open-1',
+    ticketId: 'TKT-OPEN-1',
+    accountId: 'acc-1step-1',
+    userId: 'user-1',
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    orderType: 'MARKET',
+    volume: 0.1,
+    entryPrice: 2740,
+    currentPrice: 2741,
+    exitPrice: 0,
+    stopLoss: 0,
+    takeProfit: 0,
+    grossPnl: 10,
+    commission: 0.5,
+    netPnl: 9.5,
+    status: 'OPEN',
+    openTime: '2026-11-10T00:00:00Z',
+    closeTime: '',
+  };
+  const blockedByOpen = evaluateAccountPayoutEligibility(oneStepPassed, [openPos]);
+  assert.equal(blockedByOpen.eligible, false);
+  assert.ok(blockedByOpen.reason.toLowerCase().includes('open'));
+});
+
+test('validatePayoutRequestAgainstRules validates challenge progress against PREDEFINED_CHALLENGE_PASSING_RULES', async () => {
+  const { PREDEFINED_CHALLENGE_PASSING_RULES, validatePayoutRequestAgainstRules } = await import(
+    './tradingEngine'
+  );
+
+  // Verify predefined passing rule specs
+  assert.equal(PREDEFINED_CHALLENGE_PASSING_RULES.two_step.cumulativeProfitTargetPct, 13);
+  assert.equal(PREDEFINED_CHALLENGE_PASSING_RULES.one_step.cumulativeProfitTargetPct, 10);
+  assert.equal(PREDEFINED_CHALLENGE_PASSING_RULES.three_step.cumulativeProfitTargetPct, 18);
+  assert.equal(PREDEFINED_CHALLENGE_PASSING_RULES.instant.consistencyRulePct, 15);
+
+  // 1. Even if status is marked passed, 2-Step account with only +5% cumulative profit ($52,500 on $50k) fails target check
+  const prematurePassedAcc: TradingAccountRecord = {
+    ...sampleAccount,
+    id: 'acc-premature-pass',
+    challengeType: 'two_step',
+    startingBalance: 50000,
+    balance: 52500,
+    equity: 52500,
+    currentStep: 2,
+    totalSteps: 2,
+    status: 'passed',
+  };
+  const prematureCheck = validatePayoutRequestAgainstRules({
+    account: prematurePassedAcc,
+    amountUsd: 1000,
+    method: 'USDT (BEP-20)',
+    destination: '0x1234567890abcdef1234567890abcdef12345678',
+  });
+  assert.equal(prematureCheck.valid, false);
+  assert.equal(prematureCheck.eligibility.hasMetCumulativeTarget, false);
+  assert.equal(
+    prematureCheck.eligibility.ruleChecks.find((c) => c.id === 'profit_target')?.passed,
+    false
+  );
+
+  // 2. Funded 2-Step account that earned +$6,500 (+13%) and already withdrew $1,800 ($2,000 gross) remains eligible for remaining split
+  const secondPayoutAcc: TradingAccountRecord = {
+    ...prematurePassedAcc,
+    id: 'acc-second-payout',
+    balance: 54500, // $4,500 remaining realized profit
+    equity: 54500,
+  };
+  const secondPayoutOk = validatePayoutRequestAgainstRules({
+    account: secondPayoutAcc,
+    amountUsd: 4050, // 90% of $4,500 remaining
+    method: 'USDT (BEP-20)',
+    destination: '0x1234567890abcdef1234567890abcdef12345678',
+    existingPayouts: [
+      {
+        accountId: 'acc-second-payout',
+        status: 'Verified',
+        amountUsd: 1800,
+        grossProfitDeducted: 2000,
+      },
+    ],
+  });
+  assert.equal(secondPayoutOk.valid, true);
+  assert.equal(secondPayoutOk.eligibility.hasMetCumulativeTarget, true);
+  assert.equal(secondPayoutOk.eligibility.maxWithdrawableUsd, 4050);
+
+  // 3. Reject invalid destination (< 8 chars) and out-of-range amount even on verified eligible account
+  const shortDest = validatePayoutRequestAgainstRules({
+    account: { ...prematurePassedAcc, balance: 56500, equity: 56500 },
+    amountUsd: 500,
+    method: 'USDT (BEP-20)',
+    destination: '0x12',
+  });
+  assert.equal(shortDest.valid, false);
+  assert.ok((shortDest.error || '').toLowerCase().includes('destination'));
+
+  const belowMin = validatePayoutRequestAgainstRules({
+    account: { ...prematurePassedAcc, balance: 56500, equity: 56500 },
+    amountUsd: 10,
+    method: 'USDT (BEP-20)',
+    destination: '0x1234567890abcdef1234567890abcdef12345678',
+  });
+  assert.equal(belowMin.valid, false);
+  assert.ok((belowMin.error || '').includes('$20.00'));
+});
+
+test('formatCandleCountdown and resolveChartPriceOrderType compute TradingView timer and right-click limit/stop orders accurately', async () => {
+  const { formatCandleCountdown, resolveChartPriceOrderType } = await import('./tradingEngine');
+
+  // 15m (900s) bar with 45s elapsed -> 14:15 remaining
+  assert.equal(formatCandleCountdown(945 * 1000, 900), '14:15');
+  // 1m (60s) bar exact boundary -> 01:00
+  assert.equal(formatCandleCountdown(120 * 1000, 60), '01:00');
+  // 4h (14400s) bar with 3661s elapsed -> 02:58:59
+  assert.equal(formatCandleCountdown((14400 + 3661) * 1000, 14400), '02:58:59');
+  // 1W (604800s) bar with 172800s (2d) elapsed -> 5d 00:00
+  assert.equal(formatCandleCountdown((604800 + 172800) * 1000, 604800), '5d 00:00');
+
+  // BUY below Ask -> BUY_LIMIT; BUY above Ask -> BUY_STOP
+  assert.equal(resolveChartPriceOrderType('BUY', 3305, 3310, 3310.4), 'BUY_LIMIT');
+  assert.equal(resolveChartPriceOrderType('BUY', 3315, 3310, 3310.4), 'BUY_STOP');
+  // SELL above Bid -> SELL_LIMIT; SELL below Bid -> SELL_STOP
+  assert.equal(resolveChartPriceOrderType('SELL', 3315, 3310, 3310.4), 'SELL_LIMIT');
+  assert.equal(resolveChartPriceOrderType('SELL', 3305, 3310, 3310.4), 'SELL_STOP');
+});
+
+test('normalizeCandlesForLightweightCharts, transformCandlesToHeikinAshi, and mergeRealtimeOhlcBar handle sorting, deduplication, and WS ticks', async () => {
+  const {
+    normalizeCandlesForLightweightCharts,
+    transformCandlesToHeikinAshi,
+    mergeRealtimeOhlcBar,
+    mergeSpotTickIntoLatestCandle,
+    computeEmaSeries,
+    computeBollingerBands,
+    resolveBinanceKlineStreamParam,
+  } = await import('./liveMarketFeed');
+
+  // Unsorted ms timestamps + duplicate timestamp + bad wick + zero price item
+  const normalized = normalizeCandlesForLightweightCharts([
+    { time: 1700001000 * 1000, open: 2742, high: 2744, low: 2740, close: 2743, volume: 120 },
+    { time: 1700000100 * 1000, open: 2738, high: 2739, low: 2741, close: 2740, volume: 90 },
+    { time: 1700001000 * 1000, open: 2742, high: 2746, low: 2740, close: 2745, volume: 150 },
+    { time: 1700001900 * 1000, open: 0, high: 0, low: 0, close: 0, volume: 0 },
+  ]);
+
+  assert.equal(normalized.length, 2);
+  assert.equal(normalized[0].time, 1700000100);
+  assert.equal(normalized[0].high, 2740); // clamped >= max(open, close)
+  assert.equal(normalized[0].low, 2738); // clamped <= min(open, close)
+  assert.equal(normalized[1].time, 1700001000);
+  assert.equal(normalized[1].close, 2745); // latest duplicate preserved
+
+  // Update same bar via WS OHLC
+  const sameUpdate = mergeRealtimeOhlcBar(normalized, {
+    time: 1700001000,
+    open: 2742,
+    high: 2749,
+    low: 2738,
+    close: 2748,
+    volume: 210,
+  });
+  assert.equal(sameUpdate.action, 'update');
+  assert.equal(sameUpdate.bars.length, 2);
+  assert.equal(sameUpdate.updatedBar?.high, 2749);
+  assert.equal(sameUpdate.updatedBar?.low, 2738);
+  assert.equal(sameUpdate.updatedBar?.close, 2748);
+
+  // Reject stale bar older than latest timestamp
+  const staleIgnore = mergeRealtimeOhlcBar(sameUpdate.bars, {
+    time: 1700000100,
+    open: 2738,
+    high: 2740,
+    low: 2735,
+    close: 2739,
+    volume: 50,
+  });
+  assert.equal(staleIgnore.action, 'ignore');
+  assert.equal(staleIgnore.updatedBar, null);
+
+  // Append new bar when bucket advances
+  const appendNext = mergeRealtimeOhlcBar(sameUpdate.bars, {
+    time: 1700001900,
+    open: 2748,
+    high: 2751,
+    low: 2747,
+    close: 2750,
+    volume: 40,
+  });
+  assert.equal(appendNext.action, 'append');
+  assert.equal(appendNext.bars.length, 3);
+
+  // Spot tick anchoring updates current bar and opens new bar when timeframe boundary passes
+  const spotInBar = mergeSpotTickIntoLatestCandle(appendNext.bars, 2752.5, 900, 1700002100 * 1000);
+  assert.equal(spotInBar.bars.length, 3);
+  assert.equal(spotInBar.updatedBar?.high, 2752.5);
+  const spotNextBar = mergeSpotTickIntoLatestCandle(spotInBar.bars, 2754.0, 900, 1700002800 * 1000);
+  assert.equal(spotNextBar.bars.length, 4);
+  assert.equal(spotNextBar.updatedBar?.time, 1700002800);
+
+  // Heikin-Ashi conversion
+  const ha = transformCandlesToHeikinAshi(spotNextBar.bars);
+  assert.equal(ha.length, 4);
+  assert.ok(ha[1].high >= Math.max(ha[1].open, ha[1].close));
+  assert.ok(ha[1].low <= Math.min(ha[1].open, ha[1].close));
+
+  // Indicators & WS stream params
+  const sampleBars = Array.from({ length: 25 }, (_, i) => ({
+    time: 1700000000 + i * 900,
+    open: 100 + i,
+    high: 102 + i,
+    low: 99 + i,
+    close: 101 + i,
+    volume: 100,
+  }));
+  const ema20 = computeEmaSeries(sampleBars, 20);
+  assert.equal(ema20.length, 6);
+  const bb = computeBollingerBands(sampleBars, 20, 2);
+  assert.equal(bb.upper.length, 6);
+  assert.ok(bb.upper[0].value > bb.middle[0].value && bb.middle[0].value > bb.lower[0].value);
+
+  assert.equal(resolveBinanceKlineStreamParam('BTCUSD', '15m')?.stream, 'btcusdt@kline_15m');
+  assert.equal(resolveBinanceKlineStreamParam('XAUUSD', '15m'), null);
+});
+
+test('getMarketStatus, validateOrderRequest, and evaluateOrderTrigger block weekend non-Crypto trades while keeping Crypto 24/7 live', () => {
+  const friOpenMs = Date.UTC(2026, 10, 13, 21, 59, 0); // Fri Nov 13 21:59 UTC
+  const friCloseMs = Date.UTC(2026, 10, 13, 22, 0, 0); // Fri Nov 13 22:00 UTC
+  const satMidMs = Date.UTC(2026, 10, 14, 10, 0, 0); // Sat Nov 14 10:00 UTC
+  const sunBeforeOpenMs = Date.UTC(2026, 10, 15, 21, 59, 0); // Sun Nov 15 21:59 UTC
+  const sunOpenMs = Date.UTC(2026, 10, 15, 22, 0, 0); // Sun Nov 15 22:00 UTC
+
+  // Boundary transitions for Gold, Forex, Indices
+  assert.equal(getMarketStatus('XAUUSD', friOpenMs).isOpen, true);
+  assert.equal(getMarketStatus('XAUUSD', friCloseMs).isOpen, false);
+  assert.equal(getMarketStatus('XAUUSD', satMidMs).isOpen, false);
+  assert.equal(getMarketStatus('XAUUSD', satMidMs).sessionLabel, 'CLOSED');
+  assert.equal(getMarketStatus('EURUSD', satMidMs).isOpen, false);
+  assert.equal(getMarketStatus('NAS100', satMidMs).isOpen, false);
+  assert.equal(getMarketStatus('XAUUSD', sunBeforeOpenMs).isOpen, false);
+  assert.equal(getMarketStatus('XAUUSD', sunOpenMs).isOpen, true);
+
+  // Crypto operates 24/7 even on Saturday & Sunday
+  assert.equal(getMarketStatus('BTCUSD', satMidMs).isOpen, true);
+  assert.equal(getMarketStatus('BTCUSD', satMidMs).sessionLabel, '24/7 LIVE');
+  assert.equal(getMarketStatus('ETHUSD', sunBeforeOpenMs).isOpen, true);
+
+  // Weekend order validation rejects XAUUSD on Saturday
+  const satXauOrder = validateOrderRequest(
+    {
+      accountId: 'acc-1',
+      symbol: 'XAUUSD',
+      side: 'BUY',
+      orderType: 'MARKET',
+      volume: 0.1,
+    },
+    sampleAccount,
+    xauQuote,
+    satMidMs
+  );
+  assert.equal(satXauOrder.valid, false);
+  assert.ok((satXauOrder.error || '').toLowerCase().includes('closed'));
+
+  // Weekend trigger evaluation skips SL/TP/Pending activation for XAUUSD
+  const pendingSatOrder: TradeOrderRecord = {
+    id: 'ord-sat-1',
+    ticketId: 'TKT-SAT-1',
+    accountId: 'acc-1',
+    userId: 'user-1',
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    orderType: 'BUY_LIMIT',
+    volume: 0.5,
+    entryPrice: 2749.0,
+    currentPrice: 2748.74,
+    exitPrice: 0,
+    stopLoss: 0,
+    takeProfit: 0,
+    grossPnl: 0,
+    commission: 2.5,
+    netPnl: 0,
+    status: 'PENDING',
+    openTime: '2026-11-13T20:00:00Z',
+    closeTime: '',
+  };
+  assert.equal(evaluateOrderTrigger(pendingSatOrder, xauQuote, satMidMs).action, 'NONE');
+
+  // Crypto execution succeeds 24/7 on Saturday
+  const btcQuote: MarketQuote = {
+    symbol: 'BTCUSD',
+    bid: 67150,
+    ask: 67155,
+    last: 67152,
+    change24hPct: 1.2,
+    high24h: 68000,
+    low24h: 66000,
+    timestamp: satMidMs,
+  };
+  const satBtcOrder = validateOrderRequest(
+    {
+      accountId: 'acc-1',
+      symbol: 'BTCUSD',
+      side: 'BUY',
+      orderType: 'MARKET',
+      volume: 0.05,
+    },
+    sampleAccount,
+    btcQuote,
+    satMidMs
+  );
+  assert.equal(satBtcOrder.valid, true);
+});
+
+test('reconcileCandlesWithLiveQuote preserves 1:1 historical Binance bars and reconciles forming bar and futures basis accurately', async () => {
+  const { reconcileCandlesWithLiveQuote } = await import('./liveMarketFeed');
+
+  const rawBinanceBtcBars = [
+    {
+      time: 1794661200000,
+      open: 66998.18,
+      high: 67029.30,
+      low: 66721.00,
+      close: 66796.01,
+      volume: 467,
+      isExchangeKline: true,
+    },
+    {
+      time: 1794662100000,
+      open: 66796.01,
+      high: 66874.01,
+      low: 66663.62,
+      close: 66720.00,
+      volume: 159,
+      isExchangeKline: true,
+    },
+  ];
+
+  // 1. Direct Binance Crypto feed: historical closed bar [0] is 100% untouched, forming bar [1] close updates 1:1 to liveBid
+  const reconciledBtc = reconcileCandlesWithLiveQuote(
+    rawBinanceBtcBars,
+    'BTCUSD',
+    66724.99,
+    'binance'
+  );
+  assert.equal(reconciledBtc[0].open, 66998.18);
+  assert.equal(reconciledBtc[0].high, 67029.30);
+  assert.equal(reconciledBtc[0].low, 66721.00);
+  assert.equal(reconciledBtc[0].close, 66796.01);
+  assert.equal(reconciledBtc[1].close, 66724.99);
+
+  // 2. Yahoo Finance Gold Futures (GC=F) reconciled to Swissquote Spot XAUUSD within 4% basis
+  const rawYahooGoldBars = [
+    {
+      time: 1794605400000,
+      open: 3879.10,
+      high: 3881.40,
+      low: 3875.90,
+      close: 3880.70,
+      volume: 693,
+      isExchangeKline: true,
+    },
+    {
+      time: 1794606300000,
+      open: 3880.70,
+      high: 3888.90,
+      low: 3878.70,
+      close: 3886.30,
+      volume: 1140,
+      isExchangeKline: true,
+    },
+  ];
+  const reconciledGold = reconcileCandlesWithLiveQuote(
+    rawYahooGoldBars,
+    'XAUUSD',
+    3880.07,
+    'yahoo'
+  );
+  assert.equal(reconciledGold[reconciledGold.length - 1].close, 3880.07);
+
+  // 3. Stale fallback seed (>18% away from real exchange price) never distorts authentic exchange klines
+  const rawYahooGer40 = [
+    {
+      time: 1794606300000,
+      open: 26700.00,
+      high: 26832.82,
+      low: 26678.35,
+      close: 26749.95,
+      volume: 950,
+      isExchangeKline: true,
+    },
+  ];
+  const untouchedGer40 = reconcileCandlesWithLiveQuote(
+    rawYahooGer40,
+    'GER40',
+    21450.00,
+    'yahoo'
+  );
+  assert.equal(untouchedGer40[0].close, 26749.95);
+});
+
+test('computeCurrentPriceFocusLogicalRange focuses chart viewport directly onto latest candles at current live price on pair selection', async () => {
+  const { computeCurrentPriceFocusLogicalRange } = await import('./liveMarketFeed');
+
+  // 350 historical bars -> focuses on the latest 65 bars ending at index 349 + 6 right offset
+  const range350 = computeCurrentPriceFocusLogicalRange(350, 65, 6);
+  assert.equal(range350.from, 285);
+  assert.equal(range350.to, 355);
+
+  // Small candle set (30 bars) -> clamps from to 0 and keeps right offset at current price
+  const range30 = computeCurrentPriceFocusLogicalRange(30, 65, 6);
+  assert.equal(range30.from, 0);
+  assert.equal(range30.to, 35);
+});
+
+test('computeChartSlTpDragPrice and computeDefaultQuickSlTpForPosition clamp on-chart SL/TP levels and compute live dollar risk/reward', async () => {
+  const { computeChartSlTpDragPrice, computeDefaultQuickSlTpForPosition } = await import(
+    './tradingEngine'
+  );
+
+  // 1. Quick +SL on a BUY BTCUSD position places protective SL below entry price
+  const quickSl = computeDefaultQuickSlTpForPosition({
+    symbol: 'BTCUSD',
+    side: 'BUY',
+    entryPrice: 91200,
+    currentPrice: 91250,
+    lots: 0.1,
+    existingSl: 0,
+    existingTp: 0,
+    targetType: 'sl',
+    defaultRiskUsd: 25,
+  });
+  assert.ok(quickSl.nextSl > 0 && quickSl.nextSl < 91200);
+  assert.ok(quickSl.riskUsd !== null && quickSl.riskUsd > 0);
+
+  // 2. Quick +TP on a BUY BTCUSD position places 1:2 R:R TP above entry price
+  const quickTp = computeDefaultQuickSlTpForPosition({
+    symbol: 'BTCUSD',
+    side: 'BUY',
+    entryPrice: 91200,
+    currentPrice: 91250,
+    lots: 0.1,
+    existingSl: quickSl.nextSl,
+    existingTp: 0,
+    targetType: 'tp',
+    defaultRiskUsd: 25,
+  });
+  assert.ok(quickTp.nextTp > 91250);
+  assert.ok(quickTp.rewardUsd !== null && quickTp.rewardUsd > (quickSl.riskUsd || 0));
+
+  // 3a. Dragging PENDING BUY SL above entry price clamps below entry price
+  const draggedPendingBuySl = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    entryPrice: 3880,
+    currentReferencePrice: 3882,
+    lots: 0.1,
+    targetType: 'sl',
+    rawPrice: 3920, // dragged to wrong side
+    existingSl: 3860,
+    existingTp: 3910,
+    isOpenPosition: false,
+  });
+  assert.ok(draggedPendingBuySl.clampedPrice < 3880);
+  assert.ok(draggedPendingBuySl.riskUsd !== null && draggedPendingBuySl.riskUsd > 0);
+
+  // 3b. Dragging OPEN BUY SL above current live price clamps safely below live market price
+  const draggedOpenBuySl = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    entryPrice: 3880,
+    currentReferencePrice: 3882,
+    lots: 0.1,
+    targetType: 'sl',
+    rawPrice: 3920,
+    existingSl: 3860,
+    existingTp: 3910,
+    isOpenPosition: true,
+  });
+  assert.ok(draggedOpenBuySl.clampedPrice < 3882);
+});
+
+test('formatAccountRulesSummary and INITIAL_CHALLENGES enforce all 24 challenge configurations and 24 instruments', async () => {
+  const { formatAccountRulesSummary } = await import('./tradingEngine');
+  const { INITIAL_CHALLENGES, ALL_INSTRUMENTS } = await import('../data/platformData');
+
+  assert.equal(INITIAL_CHALLENGES.length, 24);
+  assert.equal(ALL_INSTRUMENTS.length, 24);
+  for (const ch of INITIAL_CHALLENGES) {
+    assert.equal(ch.instruments.length, 24);
+  }
+
+  const instantSummary = formatAccountRulesSummary({
+    challengeType: 'instant',
+    startingBalance: 10000,
+    dailyStartBalance: 10000,
+    balance: 10000,
+    profitTargetPct: 0,
+    dailyDrawdownPct: 3,
+    maxDrawdownPct: 6,
+    minTradingDays: 0,
+    leverage: 30,
+    profitSplitPct: 80,
+    currentPhase: 1,
+    totalPhases: 1,
+    status: 'passed',
+  });
+  assert.equal(instantSummary.activeTargetPct, 0);
+  assert.equal(instantSummary.dailyDrawdownLimitUsd, 300);
+  assert.equal(instantSummary.maxDrawdownLimitUsd, 600);
+  assert.equal(instantSummary.leverageText, '1:30');
+  assert.ok(instantSummary.consistencyRuleText.includes('15%'));
+
+  const twoStepSummary = formatAccountRulesSummary({
+    challengeType: 'two_step',
+    startingBalance: 50000,
+    dailyStartBalance: 50000,
+    balance: 50000,
+    profitTargetPct: 8,
+    dailyDrawdownPct: 5,
+    maxDrawdownPct: 10,
+    minTradingDays: 3,
+    leverage: 100,
+    profitSplitPct: 90,
+    currentPhase: 1,
+    totalPhases: 2,
+    status: 'active',
+  });
+  assert.equal(twoStepSummary.activeTargetPct, 8);
+  assert.equal(twoStepSummary.activeTargetUsd, 4000);
+  assert.equal(twoStepSummary.dailyDrawdownLimitUsd, 2500);
+  assert.equal(twoStepSummary.maxDrawdownLimitUsd, 5000);
+  assert.equal(twoStepSummary.leverageText, '1:100');
+  assert.ok(twoStepSummary.phaseTargetsText.includes('Phase 1: +8% · Phase 2: +5%'));
+});
+
+test('computeSmaSeries, computeVwapSeries, synchronizeCandlesToRealtimeBucket, and reconcileCandlesWithLiveQuote eliminate exchange candle delay and align basis cleanly', async () => {
+  const { INSTRUMENTS } = await import('./tradingEngine');
+  const {
+    computeSmaSeries,
+    computeVwapSeries,
+    synchronizeCandlesToRealtimeBucket,
+    reconcileCandlesWithLiveQuote,
+  } = await import('./liveMarketFeed');
+
+  const sampleBars = Array.from({ length: 25 }, (_, i) => ({
+    time: 1700000000 + i * 900,
+    open: 100 + i,
+    high: 103 + i,
+    low: 98 + i,
+    close: 101 + i,
+    volume: 100 + i * 10,
+  }));
+
+  const sma20 = computeSmaSeries(sampleBars, 20);
+  assert.equal(sma20.length, 6);
+  const vwap = computeVwapSeries(sampleBars);
+  assert.equal(vwap.length, 25);
+  assert.ok(vwap[24].value > 100 && vwap[24].value < 130);
+
+  // Verify delayed exchange candles (e.g. 15m Yahoo Finance delay = 3 candles behind on 5m chart)
+  // are shifted forward to the exact current real-time bucket when the market is open (Wednesday 14:22 UTC)
+  const wednesdayNowMs = Date.UTC(2026, 10, 18, 14, 22, 15); // 2026-11-18T14:22:15Z (Wednesday)
+  const step5m = 5 * 60_000;
+  const expectedCurrentBucket = Math.floor(wednesdayNowMs / step5m) * step5m;
+  const delayedBars = [
+    {
+      time: expectedCurrentBucket - 4 * step5m,
+      open: 2650.0,
+      high: 2652.0,
+      low: 2648.5,
+      close: 2651.2,
+      volume: 420,
+      isExchangeKline: true,
+    },
+    {
+      time: expectedCurrentBucket - 3 * step5m, // 15 minutes behind real-time
+      open: 2651.2,
+      high: 2654.0,
+      low: 2650.8,
+      close: 2653.4,
+      volume: 510,
+      isExchangeKline: true,
+    },
+  ];
+
+  const syncedBars = synchronizeCandlesToRealtimeBucket(delayedBars, 'XAUUSD', '5m', wednesdayNowMs);
+  assert.equal(syncedBars[syncedBars.length - 1].time, expectedCurrentBucket);
+  assert.equal(syncedBars[0].time, expectedCurrentBucket - step5m);
+
+  // Spot Forex (EURUSD): historical bar [0] stays aligned while forming bar [1] updates to liveBid
+  const eurUsdBars = [
+    {
+      time: expectedCurrentBucket - 900_000,
+      open: 1.0540,
+      high: 1.0565,
+      low: 1.0532,
+      close: 1.0555,
+      volume: 420,
+      isExchangeKline: true,
+    },
+    {
+      time: expectedCurrentBucket,
+      open: 1.0555,
+      high: 1.0570,
+      low: 1.0548,
+      close: 1.0560,
+      volume: 380,
+      isExchangeKline: true,
+    },
+  ];
+  const reconciledEur = reconcileCandlesWithLiveQuote(eurUsdBars, 'EURUSD', 1.0564, 'yahoo', '15m');
+  assert.equal(reconciledEur[1].close, 1.0564);
+
+  // Static seed protection: if XAUUSD real exchange klines are at 4665.20 and liveBid is still the static seed 3880.07, do NOT shift real candles
+  const realXauBars = [
+    {
+      time: expectedCurrentBucket,
+      open: 4660.00,
+      high: 4672.50,
+      low: 4655.10,
+      close: 4665.20,
+      volume: 1200,
+      isExchangeKline: true,
+    },
+  ];
+  const protectedXau = reconcileCandlesWithLiveQuote(
+    realXauBars,
+    'XAUUSD',
+    INSTRUMENTS.XAUUSD.basePrice,
+    'yahoo',
+    '15m'
+  );
+  assert.equal(protectedXau[0].close, 4665.20);
+});
+
+test('Affiliate Program awards 10 points per referral, sets $5K Two Step point price to 110, configures all 24 evaluations, and preserves point redemptions across vault merges', async () => {
+  const {
+    AFFILIATE_POINTS_PER_REFERRAL,
+    TWO_STEP_5K_POINT_PRICE,
+    INITIAL_CHALLENGES,
+    getChallengePointPrice,
+  } = await import('../data/platformData');
+  const { mergeUserProfileRecords } = await import('./userVault');
+  type VaultUserRecord = import('./userVault').VaultUserRecord;
+
+  assert.equal(AFFILIATE_POINTS_PER_REFERRAL, 10);
+  assert.equal(TWO_STEP_5K_POINT_PRICE, 110);
+  assert.equal(INITIAL_CHALLENGES.length, 24);
+
+  const twoStep5k = INITIAL_CHALLENGES.find((c) => c.id === 'two-step-5000');
+  assert.ok(twoStep5k, 'two-step-5000 must exist');
+  assert.equal(twoStep5k.pointPrice, 110);
+  assert.equal(getChallengePointPrice(twoStep5k), 110);
+
+  // Verify every single evaluation has a positive pointPrice and monotonic scaling per challenge model
+  for (const ch of INITIAL_CHALLENGES) {
+    const pts = getChallengePointPrice(ch);
+    assert.ok(pts > 0, `Challenge ${ch.id} should have positive pointPrice`);
+    assert.equal(ch.pointPrice, pts);
+  }
+
+  // Verify that 11 referrals (11 * 10 = 110 points) can buy a $5K Two Step account and that spending 110 points persists across vault merges
+  const userBeforeRedeem: VaultUserRecord = {
+    uid: 'usr-aff-1',
+    fullName: 'Affiliate Trader',
+    email: 'affiliate@fundedapex.com',
+    country: 'India',
+    referralCode: 'APEX-AFF01',
+    role: 'user',
+    rewardPoints: 11 * AFFILIATE_POINTS_PER_REFERRAL, // 110 PTS
+    pointsUpdatedAt: 1700000100000,
+    mfaEnabled: false,
+    deletionRequested: false,
+    createdAt: '2026-11-10T00:00:00.000Z',
+  };
+
+  const userAfterRedeem5k: VaultUserRecord = {
+    ...userBeforeRedeem,
+    rewardPoints: userBeforeRedeem.rewardPoints - TWO_STEP_5K_POINT_PRICE, // 0 PTS left
+    pointsUpdatedAt: 1700000200000,
+  };
+
+  const mergedAfterRedeem = mergeUserProfileRecords(userBeforeRedeem, userAfterRedeem5k);
+  assert.equal(mergedAfterRedeem.rewardPoints, 0);
+  assert.equal(mergedAfterRedeem.pointsUpdatedAt, 1700000200000);
+
+  // Stale record with older pointsUpdatedAt cannot revert the spent points back to 110
+  const mergedAgainstStale = mergeUserProfileRecords(userAfterRedeem5k, userBeforeRedeem);
+  assert.equal(mergedAgainstStale.rewardPoints, 0);
+});
+
+test('resolveChartPriceInteractionOptions enables vertical price drag only when bars exist to prevent null PriceScale scroll crash', async () => {
+  const { resolveChartPriceInteractionOptions } = await import('./liveMarketFeed');
+
+  assert.deepEqual(resolveChartPriceInteractionOptions(0), {
+    enablePriceAxisScale: false,
+    enableVertTouchDrag: false,
+  });
+  assert.deepEqual(resolveChartPriceInteractionOptions(-3), {
+    enablePriceAxisScale: false,
+    enableVertTouchDrag: false,
+  });
+  assert.deepEqual(resolveChartPriceInteractionOptions(1), {
+    enablePriceAxisScale: true,
+    enableVertTouchDrag: true,
+  });
+  assert.deepEqual(resolveChartPriceInteractionOptions(120), {
+    enablePriceAxisScale: true,
+    enableVertTouchDrag: true,
+  });
+});
+
+test('shouldAutoFocusChartOnTick prevents live quote ticks from involuntarily resetting chart viewport after initial focus', async () => {
+  const { shouldAutoFocusChartOnTick } = await import('./liveMarketFeed');
+
+  assert.equal(shouldAutoFocusChartOnTick(false, false), true);
+  assert.equal(shouldAutoFocusChartOnTick(true, false), false);
+  assert.equal(shouldAutoFocusChartOnTick(true, true), true);
+});
+
+test('computeChartSlTpDragPrice allows open positions to drag SL smoothly to Breakeven/Profit Lock and TP flexibly on valid live side', async () => {
+  const { computeChartSlTpDragPrice } = await import('./tradingEngine');
+
+  // 1. Open BUY in profit (Entry 3863.70, Live Bid 3875.00):
+  //    Dragging SL to Breakeven (3863.70) or trailing profit (3870.00) must succeed without getting blocked at Entry
+  const buyBeSl = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    entryPrice: 3863.7,
+    currentReferencePrice: 3875.0,
+    lots: 0.1,
+    targetType: 'sl',
+    rawPrice: 3863.7,
+    existingSl: 3855.0,
+    existingTp: 3890.0,
+    isOpenPosition: true,
+  });
+  assert.equal(buyBeSl.clampedPrice, 3863.7);
+  assert.equal(buyBeSl.riskUsd, 0);
+
+  const buyProfitLockSl = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    entryPrice: 3863.7,
+    currentReferencePrice: 3875.0,
+    lots: 0.1,
+    targetType: 'sl',
+    rawPrice: 3870.0,
+    existingSl: 3855.0,
+    existingTp: 3890.0,
+    isOpenPosition: true,
+  });
+  assert.equal(buyProfitLockSl.clampedPrice, 3870.0);
+
+  // Dragging BUY SL past live Bid (3878.00 > 3875.00) clamps just below live Bid (3875.00), NOT below Entry (3863.70)
+  const buySlClampedToLive = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    entryPrice: 3863.7,
+    currentReferencePrice: 3875.0,
+    lots: 0.1,
+    targetType: 'sl',
+    rawPrice: 3878.0,
+    existingSl: 3855.0,
+    existingTp: 3890.0,
+    isOpenPosition: true,
+  });
+  assert.ok(buySlClampedToLive.clampedPrice > 3863.7 && buySlClampedToLive.clampedPrice < 3875.0);
+
+  // 2. Open BUY in drawdown (Entry 3880.50, Live Bid 3872.00):
+  //    Dragging TP between live Bid and Entry (3876.00) is valid for cutting a bounce early
+  const buyTpBelowEntry = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'BUY',
+    entryPrice: 3880.5,
+    currentReferencePrice: 3872.0,
+    lots: 0.1,
+    targetType: 'tp',
+    rawPrice: 3876.0,
+    existingSl: 3860.0,
+    existingTp: 0,
+    isOpenPosition: true,
+  });
+  assert.equal(buyTpBelowEntry.clampedPrice, 3876.0);
+
+  // 3. Open SELL in profit (Entry 3885.00, Live Ask 3872.00):
+  //    Dragging SL down to Breakeven (3885.00) or Profit Lock (3878.00) works smoothly
+  const sellProfitLockSl = computeChartSlTpDragPrice({
+    symbol: 'XAUUSD',
+    side: 'SELL',
+    entryPrice: 3885.0,
+    currentReferencePrice: 3872.0,
+    lots: 0.1,
+    targetType: 'sl',
+    rawPrice: 3878.0,
+    existingSl: 3895.0,
+    existingTp: 3850.0,
+    isOpenPosition: true,
+  });
+  assert.equal(sellProfitLockSl.clampedPrice, 3878.0);
+});

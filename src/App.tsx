@@ -111,15 +111,15 @@ const AnimatedToastPopup: React.FC = () => {
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: 10, scale: 0.97 }}
           transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          className={`fixed bottom-16 right-4 sm:right-6 z-50 max-w-sm sm:max-w-md w-[calc(100vw-2rem)] sm:w-auto bg-[#050806]/95 border ${
+          className={`fixed bottom-20 sm:bottom-16 right-3 sm:right-6 z-[10060] max-w-[calc(100vw-1.5rem)] sm:max-w-md w-auto bg-[#050806]/95 border ${
             toastMessage.type === 'error'
               ? 'border-red-500/45'
               : toastMessage.type === 'warning'
               ? 'border-amber-400/45'
               : 'border-[#00E676]/35'
-          } shadow-[0_22px_55px_rgba(0,0,0,0.95)] rounded-[12px] p-4 overflow-hidden`}
+          } shadow-[0_22px_55px_rgba(0,0,0,0.95)] rounded-[12px] p-3.5 sm:p-4 overflow-hidden`}
         >
-          <div className="flex items-start gap-3">
+          <div className="flex items-start gap-2.5 sm:gap-3">
             <div className="mt-0.5 shrink-0">
               {toastMessage.type === 'error' || toastMessage.type === 'warning' ? (
                 <AlertTriangle
@@ -133,9 +133,9 @@ const AnimatedToastPopup: React.FC = () => {
                 <Info className="w-4 h-4 text-[#69F0AE]" />
               )}
             </div>
-            <div className="flex-1 space-y-1 pr-1">
+            <div className="flex-1 min-w-0 space-y-1 pr-1">
               <div
-                className={`text-xs font-display font-bold ${
+                className={`text-xs font-display font-bold break-words ${
                   toastMessage.type === 'error'
                     ? 'text-red-400'
                     : toastMessage.type === 'warning'
@@ -145,7 +145,9 @@ const AnimatedToastPopup: React.FC = () => {
               >
                 {toastMessage.title}
               </div>
-              <div className="text-xs text-[#FFFFFF] leading-relaxed">{toastMessage.message}</div>
+              <div className="text-xs text-[#FFFFFF] leading-relaxed break-words">
+                {toastMessage.message}
+              </div>
             </div>
             <button
               type="button"
@@ -179,14 +181,14 @@ const AppRouter: React.FC = () => {
 
   const isTerminal = route === 'terminal';
   const isDashboardOrAdmin = route === 'dashboard' || route === 'admin';
-  const viewSectionKey =
+  const pageMotionKey =
     route === 'terminal'
       ? 'terminal'
       : route === 'dashboard' && user
       ? 'dashboard'
       : route === 'admin' && user
       ? 'admin'
-      : 'public';
+      : route;
 
   // Ensure page scroll resets cleanly on top-level route switches
   useEffect(() => {
@@ -198,7 +200,7 @@ const AppRouter: React.FC = () => {
   return (
     <MotionConfig
       reducedMotion="never"
-      transition={{ type: 'tween', duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ type: 'tween', duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
     >
       <div
         className={`min-h-screen flex flex-col bg-transparent text-[#FFFFFF] relative ${
@@ -217,27 +219,34 @@ const AppRouter: React.FC = () => {
         {/* Global 3-Second Animated Toast Notification Banner */}
         <AnimatedToastPopup />
 
-        <motion.div
-          key={viewSectionKey}
-          initial={false}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          className={
-            isTerminal
-              ? 'flex-1 w-full h-full relative z-10 flex flex-col'
-              : 'flex-1 relative z-10 apex-layout-transition'
-          }
-        >
-          {route === 'terminal' ? (
-            <MemoTradingTerminalView />
-          ) : route === 'dashboard' && user ? (
-            <MemoDashboardView />
-          ) : route === 'admin' && user ? (
-            <MemoAdminPanelView />
-          ) : (
-            <MemoPublicPages />
-          )}
-        </motion.div>
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={pageMotionKey}
+            style={GPU_TRANSITION_STYLE}
+            initial={{ opacity: 0, y: isTerminal ? 0 : 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: isTerminal ? 0 : -6 }}
+            transition={{
+              duration: isTerminal ? 0.14 : 0.22,
+              ease: [0.16, 1, 0.3, 1],
+            }}
+            className={
+              isTerminal
+                ? 'flex-1 w-full h-full relative z-10 flex flex-col'
+                : 'flex-1 relative z-10 apex-layout-transition'
+            }
+          >
+            {route === 'terminal' ? (
+              <MemoTradingTerminalView />
+            ) : route === 'dashboard' && user ? (
+              <MemoDashboardView />
+            ) : route === 'admin' && user ? (
+              <MemoAdminPanelView />
+            ) : (
+              <MemoPublicPages />
+            )}
+          </motion.div>
+        </AnimatePresence>
 
         {!isTerminal && !isDashboardOrAdmin && <MemoFooter />}
       </div>

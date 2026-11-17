@@ -9,6 +9,7 @@ export interface VaultUserRecord {
   referredBy?: string;
   role: 'user' | 'admin' | 'super_admin';
   rewardPoints: number;
+  pointsUpdatedAt?: number;
   lastSpinDate?: string;
   mfaEnabled: boolean;
   deletionRequested: boolean;
@@ -43,7 +44,7 @@ export function isSeedPasswordRecord(
  * Guarantees:
  * - A real user passwordHash is NEVER overwritten by a seed default, an empty/undefined hash,
  *   or an older passwordUpdatedAt timestamp.
- * - Earned rewardPoints, country, KYC state, and earliest createdAt are preserved.
+ * - Earned rewardPoints, point redemptions (via pointsUpdatedAt), country, KYC state, and earliest createdAt are preserved.
  */
 export function mergeUserProfileRecords<T extends VaultUserRecord>(
   existing: T | undefined | null,
@@ -137,6 +138,21 @@ export function mergeUserProfileRecords<T extends VaultUserRecord>(
         : incoming.createdAt
       : existing.createdAt || incoming.createdAt;
 
+  const existingPtsTs = typeof existing.pointsUpdatedAt === 'number' ? existing.pointsUpdatedAt : 0;
+  const incomingPtsTs = typeof incoming.pointsUpdatedAt === 'number' ? incoming.pointsUpdatedAt : 0;
+  let resolvedRewardPoints = Math.max(
+    Number(existing.rewardPoints || 0),
+    Number(incoming.rewardPoints || 0)
+  );
+  let resolvedPtsTs = Math.max(existingPtsTs, incomingPtsTs) || undefined;
+  if (incomingPtsTs > 0 && incomingPtsTs >= existingPtsTs && !incomingIsSeed) {
+    resolvedRewardPoints = Math.max(0, Number(incoming.rewardPoints ?? 0));
+    resolvedPtsTs = incomingPtsTs;
+  } else if (existingPtsTs > incomingPtsTs && !existingIsSeed) {
+    resolvedRewardPoints = Math.max(0, Number(existing.rewardPoints ?? 0));
+    resolvedPtsTs = existingPtsTs;
+  }
+
   return {
     ...existing,
     ...incoming,
@@ -148,8 +164,10 @@ export function mergeUserProfileRecords<T extends VaultUserRecord>(
         : existing.fullName || incoming.fullName,
     country: incomingCountry,
     referralCode: existing.referralCode || incoming.referralCode,
+    referredBy: incoming.referredBy || existing.referredBy,
     role: resolvedRole,
-    rewardPoints: Math.max(Number(existing.rewardPoints || 0), Number(incoming.rewardPoints || 0)),
+    rewardPoints: resolvedRewardPoints,
+    pointsUpdatedAt: resolvedPtsTs,
     lastSpinDate: incoming.lastSpinDate || existing.lastSpinDate,
     mfaEnabled: Boolean(existing.mfaEnabled || incoming.mfaEnabled),
     deletionRequested: Boolean(incoming.deletionRequested ?? existing.deletionRequested),

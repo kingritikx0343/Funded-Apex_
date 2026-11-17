@@ -1,8 +1,16 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { usePlatform } from '../context/PlatformContext';
-import { ACCOUNT_SIZES, COUNTRIES, FAQ_ITEMS, ChallengeTemplate } from '../data/platformData';
+import {
+  ACCOUNT_SIZES,
+  COUNTRIES,
+  FAQ_ITEMS,
+  ChallengeTemplate,
+  AFFILIATE_POINTS_PER_REFERRAL,
+  TWO_STEP_5K_POINT_PRICE,
+  getChallengePointPrice,
+} from '../data/platformData';
 import { ChallengeType } from '../engine/tradingEngine';
 import { ApexHero3DScene } from './ApexHero3DScene';
 import { FundedApexLogo } from './FundedApexLogo';
@@ -14,20 +22,24 @@ import {
   CheckCircle2,
   ChevronDown,
   Clock,
+  Copy,
   Cpu,
   Eye,
   EyeOff,
+  Gift,
   HelpCircle,
   Layers,
   Lock,
   Mail,
   RefreshCw,
   Search,
+  Share2,
   Shield,
   ShieldCheck,
   Sparkles,
   TrendingUp,
   Trophy,
+  Users,
   Zap,
 } from 'lucide-react';
 
@@ -136,30 +148,42 @@ export const PublicPages: React.FC = () => {
     verifiedPayouts,
     leaderboard,
     user,
+    allUsers,
     loginWithEmail,
     registerWithEmail,
     sendPasswordReset,
     openStripeCheckout,
-    userCoupons,
-    spinDailyWheel,
+    purchaseEvaluationWithPoints,
+    applyReferralCode,
   } = usePlatform();
 
   // Interactive Challenge Configurator State
   const [selectedType, setSelectedType] = useState<ChallengeType>('two_step');
   const [selectedSize, setSelectedSize] = useState<number>(50000);
+  const [affiliateStoreType, setAffiliateStoreType] = useState<ChallengeType>('two_step');
+  const [copiedAffiliateItem, setCopiedAffiliateItem] = useState<'code' | 'link' | null>(null);
+  const [partnerCodeInput, setPartnerCodeInput] = useState('');
+  const [affiliateStatusBanner, setAffiliateStatusBanner] = useState<{
+    ok: boolean;
+    message: string;
+    accountNumber?: string;
+    terminalUserId?: string;
+    terminalPassword?: string;
+  } | null>(null);
   const [faqQuery, setFaqQuery] = useState('');
   const [openFaqIndex, setOpenFaqIndex] = useState<number | null>(0);
   const [detailModalChallenge, setDetailModalChallenge] = useState<ChallengeTemplate | null>(null);
 
-  // Reward Wheel State
-  const [isSpinningWheel, setIsSpinningWheel] = useState(false);
-  const [wheelRotationDeg, setWheelRotationDeg] = useState(0);
-  const [wonPrizeBanner, setWonPrizeBanner] = useState<{
-    label: string;
-    code: string;
-    discountPct: number;
-    description: string;
-  } | null>(null);
+  useEffect(() => {
+    const handleModelSelect = (e: Event) => {
+      const detail = (e as CustomEvent<ChallengeType>).detail;
+      if (detail) {
+        setSelectedType(detail);
+      }
+    };
+    window.addEventListener('apex-select-challenge-type', handleModelSelect);
+    return () => window.removeEventListener('apex-select-challenge-type', handleModelSelect);
+  }, []);
 
   // Auth Form State
   const [authEmail, setAuthEmail] = useState('');
@@ -167,7 +191,20 @@ export const PublicPages: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [authName, setAuthName] = useState('');
   const [authCountry, setAuthCountry] = useState('India');
-  const [authReferral, setAuthReferral] = useState('');
+  const [authReferral, setAuthReferral] = useState(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const params = new URLSearchParams(window.location.search);
+        const refParam = (params.get('ref') || params.get('referral') || '').trim().toUpperCase();
+        if (refParam) {
+          sessionStorage.setItem('apex_pending_referral_code', refParam);
+          return refParam;
+        }
+        return sessionStorage.getItem('apex_pending_referral_code') || '';
+      }
+    } catch {}
+    return '';
+  });
   const [forgotEmail, setForgotEmail] = useState('');
   const [showForgotBox, setShowForgotBox] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -222,11 +259,21 @@ export const PublicPages: React.FC = () => {
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  const availableChallenges = challenges.filter((c) => c.status === 'available');
-  const selectedChallenge =
-    availableChallenges.find((c) => c.type === selectedType && c.accountSize === selectedSize) ||
-    availableChallenges.find((c) => c.type === selectedType) ||
-    availableChallenges[0];
+  const availableChallenges = useMemo(
+    () => challenges.filter((c) => c.status === 'available'),
+    [challenges]
+  );
+  const selectedChallenge = useMemo(
+    () =>
+      availableChallenges.find((c) => c.type === selectedType && c.accountSize === selectedSize) ||
+      availableChallenges.find((c) => c.type === selectedType) ||
+      availableChallenges[0],
+    [availableChallenges, selectedType, selectedSize]
+  );
+  const twoStepChallenges = useMemo(
+    () => availableChallenges.filter((c) => c.type === 'two_step'),
+    [availableChallenges]
+  );
 
   const handleBuyChallenge = (challengeId: string) => {
     openStripeCheckout(challengeId);
@@ -264,26 +311,26 @@ export const PublicPages: React.FC = () => {
           aria-modal="true"
           aria-labelledby="program-spec-title"
           data-interactive-container
-          style={{ willChange: 'transform, opacity' }}
+          style={{ willChange: 'opacity' }}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+          transition={{ duration: 0.12, ease: 'easeOut' }}
           onClick={(e) => {
             if (e.target === e.currentTarget) {
               setDetailModalChallenge(null);
             }
           }}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-4 sm:p-6 overflow-y-auto"
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-4 sm:p-6 overflow-y-auto"
         >
           <motion.div
             data-interactive-container
             style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-            initial={{ opacity: 0, y: 10, scale: 0.985 }}
+            initial={{ opacity: 0, y: 6, scale: 0.99 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 8, scale: 0.985 }}
-            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-            className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto my-auto rounded-[24px] bg-[#071318]/98 border border-[#00E5B0]/35 p-6 sm:p-7 space-y-5 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] custom-scrollbar"
+            exit={{ opacity: 0, y: 4, scale: 0.99 }}
+            transition={{ duration: 0.12, ease: 'easeOut' }}
+            className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto my-auto rounded-[24px] bg-[#071318] border border-[#00E5B0]/35 p-6 sm:p-7 space-y-5 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] custom-scrollbar"
           >
           <div className="flex items-start justify-between gap-4 border-b border-[#00E5B0]/20 pb-4">
             <div>
@@ -322,19 +369,27 @@ export const PublicPages: React.FC = () => {
             <div className="p-3.5 rounded-[16px] bg-[#050E13] border border-[#00E5B0]/20">
               <div className="text-[#728F8A] uppercase font-mono text-[10px] font-bold">Profit Target</div>
               <div className="text-sm font-mono font-bold text-white mt-1">
-                {ch.profitTargetPct === 0 ? 'None (Instant Funded)' : `${ch.profitTargetPct}% Target`}
+                {ch.profitTargetPct === 0
+                  ? 'None (Instant Funded)'
+                  : ch.type === 'two_step'
+                  ? `${ch.profitTargetPct}% Step 1 · ${ch.phase2TargetPct ?? 5}% Step 2`
+                  : ch.type === 'three_step'
+                  ? `${ch.profitTargetPct}% / ${ch.phase2TargetPct ?? 6}% / ${ch.phase3TargetPct ?? 6}%`
+                  : `${ch.profitTargetPct}% Target`}
               </div>
             </div>
             <div className="p-3.5 rounded-[16px] bg-[#050E13] border border-[#00E5B0]/20">
               <div className="text-[#728F8A] uppercase font-mono text-[10px] font-bold">Daily / Max Drawdown</div>
               <div className="text-sm font-mono font-bold text-white mt-1">
-                {ch.dailyDrawdownPct}% / {ch.maxDrawdownPct}%
+                {ch.dailyDrawdownPct}% / {ch.maxDrawdownPct}% (Static)
               </div>
             </div>
             <div className="p-3.5 rounded-[16px] bg-[#050E13] border border-[#00E5B0]/20">
-              <div className="text-[#728F8A] uppercase font-mono text-[10px] font-bold">Trading Duration</div>
+              <div className="text-[#728F8A] uppercase font-mono text-[10px] font-bold">Trading Days &amp; Consistency</div>
               <div className="text-sm font-mono font-bold text-white mt-1">
-                {ch.minTradingDays} Min Days · Unlimited Time
+                {ch.type === 'instant'
+                  ? '0 Eval Days · 15% Consistency'
+                  : `${ch.minTradingDays} Min Days · 0% Consistency`}
               </div>
             </div>
             <div className="p-3.5 rounded-[16px] bg-[#050E13] border border-[#00E5B0]/20">
@@ -770,98 +825,129 @@ export const PublicPages: React.FC = () => {
                 { type: 'instant' as ChallengeType, label: 'Instant' },
                 { type: 'three_step' as ChallengeType, label: 'Three Step' },
               ]
-            ).map((tab) => (
-              <button
-                key={tab.type}
-                type="button"
-                onClick={() => setSelectedType(tab.type)}
-                className={`px-4 py-2.5 rounded-[9px] text-xs font-display font-bold transition-all cursor-pointer ${
-                  selectedType === tab.type
-                    ? 'bg-[#00E676] text-[#000000] shadow-[0_0_20px_rgba(0,230,118,0.28)]'
-                    : 'text-[#A7B1AA] hover:text-white'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
+            ).map((tab) => {
+              const active = selectedType === tab.type;
+              return (
+                <button
+                  key={tab.type}
+                  type="button"
+                  onClick={() => setSelectedType(tab.type)}
+                  className={`relative px-4 py-2.5 rounded-[9px] text-xs font-display font-bold transition-colors duration-150 cursor-pointer ${
+                    active ? 'text-[#000000]' : 'text-[#A7B1AA] hover:text-white'
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="challenges-page-model-pill"
+                      transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                      className="absolute inset-0 rounded-[9px] bg-[#00E676] shadow-[0_0_20px_rgba(0,230,118,0.28)]"
+                    />
+                  )}
+                  <span className="relative z-10">{tab.label}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredList.map((ch) => (
-            <div
-              key={ch.id}
-              className="rounded-[14px] bg-[#090D0A] hover:bg-[#0D130F] border border-[#00E676]/18 hover:border-[#00E676]/45 p-6 flex flex-col justify-between space-y-6 transition-all duration-200 shadow-[0_18px_45px_rgba(0,0,0,0.85)]"
-            >
-              <div className="space-y-4">
-                <div className="flex items-start justify-between gap-3 border-b border-white/8 pb-4">
-                  <div>
-                    <div className="text-[11px] font-mono font-semibold uppercase tracking-[0.12em] text-[#00E676]">
-                      {ch.typeLabel}
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={selectedType}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+          >
+            {filteredList.map((ch) => (
+              <div
+                key={ch.id}
+                className="rounded-[14px] bg-[#090D0A] hover:bg-[#0D130F] border border-[#00E676]/18 hover:border-[#00E676]/45 p-6 flex flex-col justify-between space-y-6 transition-all duration-200 hover:-translate-y-1 shadow-[0_18px_45px_rgba(0,0,0,0.85)]"
+              >
+                <div className="space-y-4">
+                  <div className="flex items-start justify-between gap-3 border-b border-white/8 pb-4">
+                    <div>
+                      <div className="text-[11px] font-mono font-semibold uppercase tracking-[0.12em] text-[#00E676]">
+                        {ch.typeLabel}
+                      </div>
+                      <div className="text-3xl font-mono font-extrabold text-[#FFFFFF] mt-1">
+                        ${ch.accountSize.toLocaleString()}
+                      </div>
                     </div>
-                    <div className="text-3xl font-mono font-extrabold text-[#FFFFFF] mt-1">
-                      ${ch.accountSize.toLocaleString()}
+                    <div className="text-right px-3.5 py-2 rounded-[10px] bg-[#030504] border border-[#00E676]/25">
+                      <div className="text-[10px] font-mono uppercase text-[#77837B]">Evaluation Fee</div>
+                      <div className="text-xl font-mono font-extrabold text-[#00E676]">
+                        ${ch.priceUsd}
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right px-3.5 py-2 rounded-[10px] bg-[#030504] border border-[#00E676]/25">
-                    <div className="text-[10px] font-mono uppercase text-[#77837B]">Fee</div>
-                    <div className="text-xl font-mono font-extrabold text-[#00E676]">
-                      ${ch.priceUsd}
+
+                  <div className="space-y-2.5 text-xs">
+                    <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
+                      <span className="text-[#A7B1AA]">Profit Target</span>
+                      <span className="font-mono font-bold text-[#FFFFFF]">
+                        {ch.profitTargetPct === 0
+                          ? 'None (Direct Funded)'
+                          : ch.type === 'two_step'
+                          ? `${ch.profitTargetPct}% Step 1 · ${ch.phase2TargetPct ?? 5}% Step 2`
+                          : ch.type === 'three_step'
+                          ? `${ch.profitTargetPct}% / ${ch.phase2TargetPct ?? 6}% / ${ch.phase3TargetPct ?? 6}%`
+                          : `${ch.profitTargetPct}% (Single Step)`}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
+                      <span className="text-[#A7B1AA]">Daily Drawdown</span>
+                      <span className="font-mono font-bold text-[#FFFFFF]">
+                        {ch.dailyDrawdownPct}% (${((ch.accountSize * ch.dailyDrawdownPct) / 100).toLocaleString()})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
+                      <span className="text-[#A7B1AA]">Maximum Drawdown</span>
+                      <span className="font-mono font-bold text-[#FFFFFF]">
+                        {ch.maxDrawdownPct}% (${((ch.accountSize * ch.maxDrawdownPct) / 100).toLocaleString()})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
+                      <span className="text-[#A7B1AA]">Minimum Trading Days</span>
+                      <span className="font-mono font-bold text-[#FFFFFF]">
+                        {ch.type === 'instant' ? '0 Eval · 5 Payout Days' : `${ch.minTradingDays} Days`}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
+                      <span className="text-[#A7B1AA]">Profit Split</span>
+                      <span className="font-mono font-bold text-[#00E676]">Up to {ch.profitSplitPct}%</span>
+                    </div>
+                    <div className="flex items-center justify-between py-1.5">
+                      <span className="text-[#A7B1AA]">Trading Rules</span>
+                      <span className="font-mono font-semibold text-[#69F0AE]">
+                        1:{ch.leverage} · {ch.type === 'instant' ? '15% Consistency' : 'No Consistency Cap'}
+                      </span>
                     </div>
                   </div>
                 </div>
 
-                <div className="space-y-2.5 text-xs">
-                  <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
-                    <span className="text-[#A7B1AA]">Profit Target</span>
-                    <span className="font-mono font-bold text-[#FFFFFF]">
-                      {ch.profitTargetPct === 0 ? 'None (Direct Funded)' : `${ch.profitTargetPct}%`}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
-                    <span className="text-[#A7B1AA]">Daily Drawdown</span>
-                    <span className="font-mono font-bold text-[#FFFFFF]">{ch.dailyDrawdownPct}%</span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
-                    <span className="text-[#A7B1AA]">Maximum Drawdown</span>
-                    <span className="font-mono font-bold text-[#FFFFFF]">{ch.maxDrawdownPct}%</span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
-                    <span className="text-[#A7B1AA]">Minimum Trading Days</span>
-                    <span className="font-mono font-bold text-[#FFFFFF]">{ch.minTradingDays} Days</span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5 border-b border-white/[0.05]">
-                    <span className="text-[#A7B1AA]">Profit Split</span>
-                    <span className="font-mono font-bold text-[#00E676]">Up to {ch.profitSplitPct}%</span>
-                  </div>
-                  <div className="flex items-center justify-between py-1.5">
-                    <span className="text-[#A7B1AA]">Trading Rules</span>
-                    <span className="font-mono font-semibold text-[#69F0AE]">
-                      1:{ch.leverage} · No Time Limit
-                    </span>
+                <div className="pt-2">
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setDetailModalChallenge(ch)}
+                      className="py-2.5 px-3 rounded-[9px] bg-[#030504] hover:bg-[#131B15] border border-white/12 text-xs font-semibold text-[#A7B1AA] hover:text-white cursor-pointer transition-all"
+                    >
+                      Specifications
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBuyChallenge(ch.id)}
+                      className="py-2.5 px-3 rounded-[9px] bg-[#00E676] hover:bg-[#00C853] text-[#000000] font-display font-bold text-xs cursor-pointer transition-all"
+                    >
+                      Start Challenge
+                    </button>
                   </div>
                 </div>
               </div>
-
-              <div className="grid grid-cols-2 gap-2.5 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setDetailModalChallenge(ch)}
-                  className="py-2.5 px-3 rounded-[9px] bg-[#030504] hover:bg-[#131B15] border border-white/12 text-xs font-semibold text-[#A7B1AA] hover:text-white cursor-pointer transition-all"
-                >
-                  Specifications
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleBuyChallenge(ch.id)}
-                  className="py-2.5 px-3 rounded-[9px] bg-[#00E676] hover:bg-[#00C853] text-[#000000] font-display font-bold text-xs cursor-pointer transition-all"
-                >
-                  Start Challenge
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </motion.div>
+        </AnimatePresence>
       </main>
     );
   }
@@ -1108,46 +1194,36 @@ export const PublicPages: React.FC = () => {
   }
 
   // ============================================================================
-  // REWARDS ("COMING SOON") / REFERRAL / TERMINAL PREVIEW
+  // ============================================================================
+  // REFERRAL / AFFILIATE PROGRAM & TERMINAL PREVIEW
   // ============================================================================
   if (route === 'free-spin') {
     return (
       <main className="max-w-[1100px] mx-auto px-4 sm:px-8 py-16 sm:py-24">
         <div className="rounded-[24px] bg-[#090D0A] border border-[#00E5B0]/30 p-8 sm:p-14 text-center space-y-6 relative overflow-hidden shadow-[0_28px_80px_rgba(0,0,0,0.92)]">
-          <div
-            aria-hidden="true"
-            style={{
-              background: 'radial-gradient(ellipse at center, rgba(0, 229, 176, 0.14) 0%, transparent 70%)',
-            }}
-            className="pointer-events-none absolute -top-24 left-1/2 -translate-x-1/2 w-[480px] h-[240px] rounded-full"
-          />
-          <div className="w-16 h-16 mx-auto rounded-2xl bg-[#051217] border border-[#00E5B0]/35 flex items-center justify-center shadow-[0_0_32px_rgba(0,229,176,0.22)]">
-            <Award className="w-8 h-8 text-[#00E5B0]" />
+          <div className="w-16 h-16 mx-auto rounded-2xl bg-[#051217] border border-[#00E5B0]/35 flex items-center justify-center">
+            <Users className="w-8 h-8 text-[#00E5B0]" />
           </div>
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#051217] border border-[#00E5B0]/35 text-xs font-mono font-bold uppercase tracking-[0.16em] text-[#00E5B0]">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>COMING SOON</span>
-          </div>
-          <h1 className="text-3xl sm:text-5xl font-display font-extrabold text-[#FFFFFF] tracking-tight">
-            FUNDED APEX <span className="text-[#00E5B0]">Rewards Vault</span>
+          <h1 className="text-3xl sm:text-4xl font-display font-extrabold text-[#FFFFFF] tracking-tight">
+            Affiliate Program &amp; Point Redemption
           </h1>
           <p className="text-sm sm:text-base text-[#A3BDB8] max-w-xl mx-auto leading-relaxed">
-            Our exclusive Trader Rewards Vault — featuring milestone loyalty allocations, fee-free challenge vouchers, and VIP profit split boosts — is launching soon.
+            Point rewards and evaluation account redemptions are managed directly inside the FUNDED APEX Affiliate Program.
           </p>
           <div className="flex flex-wrap items-center justify-center gap-3.5 pt-2">
             <button
               type="button"
-              onClick={() => navigate('challenges')}
+              onClick={() => navigate('referral')}
               className="px-7 py-3.5 rounded-[14px] apex-glow-btn text-xs sm:text-sm cursor-pointer"
             >
-              Explore Funded Challenges →
+              Open Affiliate Program →
             </button>
             <button
               type="button"
-              onClick={() => navigate('home')}
+              onClick={() => navigate('challenges')}
               className="px-6 py-3.5 rounded-[14px] apex-secondary-btn text-xs sm:text-sm cursor-pointer"
             >
-              Back to Home
+              Explore Challenges
             </button>
           </div>
         </div>
@@ -1156,91 +1232,556 @@ export const PublicPages: React.FC = () => {
   }
 
   if (route === 'referral' || route === 'terminal-preview') {
-    const handleTriggerSpin = () => {
-      if (isSpinningWheel) return;
-      setIsSpinningWheel(true);
-      setWonPrizeBanner(null);
-      const outcome = spinDailyWheel({ requireAuth: false });
-      const extraSpins = 1440 + Math.floor(Math.random() * 360);
-      setWheelRotationDeg((prev) => prev + extraSpins);
-      setTimeout(() => {
-        setIsSpinningWheel(false);
-        if (outcome.ok && outcome.coupon) {
-          setWonPrizeBanner({
-            label: outcome.coupon.label,
-            code: outcome.coupon.code,
-            discountPct: outcome.coupon.discountPct || 20,
-            description: outcome.coupon.description,
-          });
-        }
-      }, 1600);
+    const activePartnerCode = user?.referralCode || 'APEX-PARTNER';
+    const shareReferralUrl =
+      typeof window !== 'undefined'
+        ? `${window.location.origin}${window.location.pathname}?page=register&ref=${encodeURIComponent(activePartnerCode)}`
+        : `https://fundedapex.com/?page=register&ref=${encodeURIComponent(activePartnerCode)}`;
+
+    const userPoints = Math.max(0, Number(user?.rewardPoints || 0));
+    const referredUsers = user
+      ? allUsers.filter(
+          (u) =>
+            u.uid !== user.uid &&
+            (u.referredBy || '').trim().toUpperCase() === (user.referralCode || '').trim().toUpperCase()
+        )
+      : [];
+
+    const fiveKTwoStepChallenge =
+      availableChallenges.find((c) => c.id === 'two-step-5000') ||
+      availableChallenges.find((c) => c.type === 'two_step' && c.accountSize === 5000) ||
+      availableChallenges[0];
+    const fiveKPointCost = fiveKTwoStepChallenge
+      ? getChallengePointPrice(fiveKTwoStepChallenge)
+      : TWO_STEP_5K_POINT_PRICE;
+    const progressTo5kPct = Math.min(100, Math.round((userPoints / fiveKPointCost) * 100));
+    const pointsRemainingFor5k = Math.max(0, fiveKPointCost - userPoints);
+    const referralsRemainingFor5k = Math.ceil(pointsRemainingFor5k / AFFILIATE_POINTS_PER_REFERRAL);
+
+    const storeChallenges = availableChallenges.filter((c) => c.type === affiliateStoreType);
+
+    const handleCopyCode = () => {
+      try {
+        navigator.clipboard.writeText(activePartnerCode);
+        setCopiedAffiliateItem('code');
+        setTimeout(() => setCopiedAffiliateItem(null), 2000);
+      } catch {}
+    };
+
+    const handleCopyLink = () => {
+      try {
+        navigator.clipboard.writeText(shareReferralUrl);
+        setCopiedAffiliateItem('link');
+        setTimeout(() => setCopiedAffiliateItem(null), 2000);
+      } catch {}
+    };
+
+    const handleBuyWithPoints = (challengeId: string) => {
+      setAffiliateStatusBanner(null);
+      if (!user) {
+        navigate('login');
+        return;
+      }
+      const res = purchaseEvaluationWithPoints(challengeId);
+      setAffiliateStatusBanner({
+        ok: res.ok,
+        message: res.message,
+        accountNumber: res.account?.accountNumber,
+        terminalUserId: res.account?.terminalUserId,
+        terminalPassword: res.account?.terminalPassword,
+      });
+    };
+
+    const handleApplyPartnerCode = (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!partnerCodeInput.trim()) return;
+      const res = applyReferralCode(partnerCodeInput);
+      setAffiliateStatusBanner({
+        ok: res.ok,
+        message: res.message,
+      });
+      if (res.ok) {
+        setPartnerCodeInput('');
+      }
     };
 
     return (
-      <main className="max-w-[1380px] mx-auto px-4 sm:px-8 py-12 space-y-10">
-        <div className="rounded-[14px] bg-[#090D0A] border border-[#00E676]/20 p-7 sm:p-9 grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
-          <div className="lg:col-span-7 space-y-4">
-            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-[8px] bg-[#030504] border border-[#00E676]/25 text-[11px] font-mono font-semibold uppercase tracking-[0.14em] text-[#00E676]">
-              <span>FUNDED APEX PARTNER PROGRAM</span>
-            </div>
-            <h1 className="text-3xl sm:text-5xl font-display font-extrabold text-[#FFFFFF] tracking-tight">
-              Institutional Partner &amp; Referral Program
-            </h1>
-            <p className="text-sm sm:text-base text-[#A7B1AA] leading-relaxed">
-              Share your institutional referral code ({user ? user.referralCode : 'APEX-PARTNER'}) to earn reward credits and evaluation fee discounts on verified trader signups.
-            </p>
+      <main
+        data-testid="affiliate-program-page"
+        className="apex-affiliate-simple-font max-w-[1320px] mx-auto px-4 sm:px-8 py-10 sm:py-12 space-y-8 font-sans antialiased"
+      >
+        {renderProgramDetailsModal()}
 
-            {wonPrizeBanner && (
-              <div className="p-4 rounded-[12px] bg-[#030504] border border-[#00E676]/40 space-y-1">
-                <div className="text-xs font-mono font-bold text-[#00E676] uppercase">
-                  Reward Unlocked: {wonPrizeBanner.label}
+        {/* HERO & PARTNER REFERRAL CONSOLE */}
+        <div className="rounded-2xl bg-[#090D0A] border border-white/10 p-6 sm:p-8 space-y-6 shadow-[0_20px_50px_rgba(0,0,0,0.75)]">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-stretch">
+            <div className="lg:col-span-7 flex flex-col justify-between space-y-5">
+              <div className="space-y-3">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-md bg-[#00E676]/10 border border-[#00E676]/25 text-xs font-sans font-medium text-[#00E676]">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Affiliate Partner Program · 1 Referral = {AFFILIATE_POINTS_PER_REFERRAL} Points</span>
                 </div>
-                <div className="text-sm font-mono font-bold text-white">
-                  Coupon Code: <span className="text-[#00E676]">{wonPrizeBanner.code}</span>
-                </div>
-                <p className="text-xs text-[#A7B1AA]">{wonPrizeBanner.description}</p>
+                <h1 className="text-2xl sm:text-3xl lg:text-4xl font-sans font-semibold text-white tracking-tight leading-snug">
+                  Refer Traders, Earn Points &amp; Unlock Free Evaluations
+                </h1>
+                <p className="text-sm sm:text-[15px] font-sans font-normal text-[#A7B1AA] leading-relaxed">
+                  Every trader who registers with your Partner Referral Code earns you{' '}
+                  <span className="text-[#00E676] font-medium">+{AFFILIATE_POINTS_PER_REFERRAL} Affiliate Points</span>.
+                  Accumulate{' '}
+                  <span className="text-white font-medium">{TWO_STEP_5K_POINT_PRICE} Points</span>{' '}
+                  (11 Referrals) to claim a{' '}
+                  <span className="text-white font-medium">$5,000 Two Step Challenge Account</span>, or redeem your points across any of our 24 Evaluation accounts from $5K to $200K.
+                </p>
               </div>
-            )}
 
-            <div className="flex flex-wrap items-center gap-3 pt-2">
+              {/* PARTNER CODE & SHARE LINK BAR */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                <div className="p-3.5 rounded-xl bg-[#030504] border border-white/10 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-sans font-medium text-[#8A968E]">
+                      Partner Referral Code
+                    </div>
+                    <div className="text-base font-sans font-semibold text-white truncate mt-0.5 tabular-nums">
+                      {activePartnerCode}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="px-3.5 py-2 rounded-lg bg-[#00E676] hover:bg-[#00C853] text-[#04120A] font-sans font-medium text-xs flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
+                  >
+                    {copiedAffiliateItem === 'code' ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Code</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-[#030504] border border-white/10 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs font-sans font-medium text-[#8A968E]">
+                      Direct Invite Link (+{AFFILIATE_POINTS_PER_REFERRAL} pts / signup)
+                    </div>
+                    <div className="text-xs font-sans text-[#B8C2BC] truncate mt-1">
+                      {shareReferralUrl}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleCopyLink}
+                    className="px-3.5 py-2 rounded-lg bg-[#101A14] hover:bg-[#16261C] border border-[#00E676]/30 text-[#00E676] font-sans font-medium text-xs flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
+                  >
+                    {copiedAffiliateItem === 'link' ? (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Copied</span>
+                      </>
+                    ) : (
+                      <>
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>Copy Link</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* FEATURED GOAL CARD: $5,000 TWO STEP = 110 POINTS */}
+            <div className="lg:col-span-5 rounded-xl bg-[#030504] border border-[#00E676]/25 p-5 sm:p-6 flex flex-col justify-between space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <span className="inline-block px-2.5 py-0.5 rounded-md bg-[#00E676]/10 border border-[#00E676]/25 text-[11px] font-sans font-medium text-[#00E676]">
+                    Featured Reward
+                  </span>
+                  <h2 className="text-lg sm:text-xl font-sans font-semibold text-white mt-2">
+                    $5,000 Two Step Challenge
+                  </h2>
+                  <p className="text-xs font-sans text-[#9CA8A1] mt-0.5">
+                    8% Step 1 · 5% Step 2 · 90% Profit Split · 1:100 Leverage
+                  </p>
+                </div>
+                <div className="text-right px-3.5 py-2 rounded-lg bg-[#090D0A] border border-white/10 shrink-0">
+                  <div className="text-[11px] font-sans text-[#8A968E]">Point Price</div>
+                  <div className="text-xl font-sans font-semibold text-[#00E676] tabular-nums">
+                    {TWO_STEP_5K_POINT_PRICE} pts
+                  </div>
+                  <div className="text-[11px] font-sans text-[#9CA8A1]">11 Referrals</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-sans">
+                  <span className="text-[#9CA8A1]">
+                    Your Balance: <strong className="text-white font-semibold tabular-nums">{userPoints} pts</strong> / {TWO_STEP_5K_POINT_PRICE} pts
+                  </span>
+                  <span className="text-[#00E676] font-medium tabular-nums">{progressTo5kPct}%</span>
+                </div>
+                <div className="w-full h-2 rounded-full bg-[#090D0A] border border-white/10 overflow-hidden">
+                  <div
+                    className="h-full bg-[#00E676] transition-all duration-300"
+                    style={{ width: `${progressTo5kPct}%` }}
+                  />
+                </div>
+                <div className="text-xs font-sans text-[#8A968E] leading-relaxed">
+                  {userPoints >= TWO_STEP_5K_POINT_PRICE
+                    ? 'You have enough Affiliate Points to claim your $5,000 Two Step Challenge right now.'
+                    : `${pointsRemainingFor5k} more points (${referralsRemainingFor5k} referral${referralsRemainingFor5k === 1 ? '' : 's'} at +${AFFILIATE_POINTS_PER_REFERRAL} pts each) needed to unlock.`}
+                </div>
+              </div>
+
               <button
                 type="button"
-                onClick={handleTriggerSpin}
-                disabled={isSpinningWheel}
-                className="px-6 py-3 rounded-[9px] bg-[#00E676] hover:bg-[#00C853] disabled:opacity-40 text-[#000000] font-display font-bold text-xs cursor-pointer transition-all"
+                onClick={() => handleBuyWithPoints('two-step-5000')}
+                className="w-full py-3 px-4 rounded-lg bg-[#00E676] hover:bg-[#00C853] text-[#04120A] font-sans font-semibold text-xs sm:text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors"
               >
-                {isSpinningWheel
-                  ? 'Allocating Voucher...'
-                  : 'Claim Partner Discount Voucher'}
-              </button>
-              <button
-                type="button"
-                onClick={() => navigate('challenges')}
-                className="px-6 py-3 rounded-[9px] bg-[#030504] hover:bg-[#131B15] border border-white/12 text-xs font-semibold text-white cursor-pointer transition-all"
-              >
-                Explore Challenges
+                <Gift className="w-4 h-4" />
+                <span>
+                  {user
+                    ? `Buy $5,000 Two Step with ${TWO_STEP_5K_POINT_PRICE} Points`
+                    : `Sign In to Redeem $5,000 Two Step (${TWO_STEP_5K_POINT_PRICE} pts)`}
+                </span>
               </button>
             </div>
           </div>
 
-          <div className="lg:col-span-5 flex flex-col items-center justify-center p-6 rounded-[14px] bg-[#030504] border border-[#00E676]/15 space-y-4">
-            <div
-              style={{
-                transform: `rotate(${wheelRotationDeg}deg)`,
-                transition: 'transform 1.5s cubic-bezier(0.2, 0.8, 0.2, 1)',
-              }}
-              className="w-40 h-40 rounded-full bg-[#090D0A] border-2 border-[#00E676]/45 flex items-center justify-center shadow-[0_0_40px_rgba(0,230,118,0.18)]"
-            >
-              <Award className="w-14 h-14 text-[#00E676]" />
+          {/* TELEMETRY METRICS ROW */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5 pt-4 border-t border-white/10">
+            <div className="p-4 rounded-xl bg-[#030504] border border-white/10">
+              <div className="text-xs font-sans font-medium text-[#8A968E]">Available Points</div>
+              <div className="text-xl sm:text-2xl font-sans font-semibold text-[#00E676] mt-1 tabular-nums">
+                {userPoints} pts
+              </div>
+              <div className="text-xs font-sans text-[#9CA8A1] mt-1">Instant Evaluation Redemption</div>
             </div>
-            <div className="text-center space-y-1">
-              <div className="text-xs font-mono uppercase text-[#77837B]">Recent Vouchers</div>
-              <div className="text-xs font-mono text-[#A7B1AA]">
-                {userCoupons.length > 0
-                  ? `${userCoupons[0].label} (${userCoupons[0].code})`
-                  : 'Claim your discount voucher above'}
+            <div className="p-4 rounded-xl bg-[#030504] border border-white/10">
+              <div className="text-xs font-sans font-medium text-[#8A968E]">Points per Referral</div>
+              <div className="text-xl sm:text-2xl font-sans font-semibold text-white mt-1 tabular-nums">
+                +{AFFILIATE_POINTS_PER_REFERRAL} pts
+              </div>
+              <div className="text-xs font-sans text-[#9CA8A1] mt-1">1 Referral = 10 Points</div>
+            </div>
+            <div className="p-4 rounded-xl bg-[#030504] border border-white/10">
+              <div className="text-xs font-sans font-medium text-[#8A968E]">Verified Referrals</div>
+              <div className="text-xl sm:text-2xl font-sans font-semibold text-white mt-1 tabular-nums">
+                {referredUsers.length}
+              </div>
+              <div className="text-xs font-sans text-[#9CA8A1] mt-1">
+                +{referredUsers.length * AFFILIATE_POINTS_PER_REFERRAL} pts earned total
               </div>
             </div>
+            <div className="p-4 rounded-xl bg-[#030504] border border-white/10">
+              <div className="text-xs font-sans font-medium text-[#8A968E]">$5K Two-Step Price</div>
+              <div className="text-xl sm:text-2xl font-sans font-semibold text-[#00E676] mt-1 tabular-nums">
+                {TWO_STEP_5K_POINT_PRICE} pts
+              </div>
+              <div className="text-xs font-sans text-[#9CA8A1] mt-1">11 Referrals · Instant Activation</div>
+            </div>
+          </div>
+
+          {/* STATUS BANNER WHEN REDEEMING POINTS OR LINKING REFERRAL CODE */}
+          {affiliateStatusBanner && (
+            <div
+              className={`p-4 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                affiliateStatusBanner.ok
+                  ? 'bg-[#041810] border-[#00E676]/40 text-white'
+                  : 'bg-[#1A0B0B] border-red-500/35 text-red-200'
+              }`}
+            >
+              <div className="space-y-1">
+                <div className="text-xs font-sans font-semibold text-[#00E676]">
+                  {affiliateStatusBanner.ok ? 'Affiliate Points Transaction Confirmed' : 'Affiliate Program Notice'}
+                </div>
+                <div className="text-sm font-sans">{affiliateStatusBanner.message}</div>
+                {affiliateStatusBanner.accountNumber && (
+                  <div className="text-xs font-sans text-[#A7B1AA] pt-0.5 tabular-nums">
+                    Account: <strong className="text-white">#{affiliateStatusBanner.accountNumber}</strong> · Terminal ID:{' '}
+                    <strong className="text-[#00E676]">{affiliateStatusBanner.terminalUserId}</strong> · Password:{' '}
+                    <strong className="text-white">{affiliateStatusBanner.terminalPassword}</strong>
+                  </div>
+                )}
+              </div>
+              {affiliateStatusBanner.accountNumber && (
+                <button
+                  type="button"
+                  onClick={() => navigate('terminal')}
+                  className="px-4 py-2.5 rounded-lg bg-[#00E676] hover:bg-[#00C853] text-[#04120A] font-sans font-semibold text-xs shrink-0 cursor-pointer"
+                >
+                  Open Trading Terminal →
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ====================================================================
+            AFFILIATE POINTS EVALUATION STORE — ALL 24 EVALUATIONS ($5K TO $200K)
+            ==================================================================== */}
+        <section className="space-y-5">
+          <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+            <div className="space-y-1.5">
+              <div className="text-xs font-sans font-medium text-[#00E676]">
+                Affiliate Points Store · All 24 Programs
+              </div>
+              <h2 className="text-xl sm:text-2xl font-sans font-semibold text-white tracking-tight">
+                Redeem Points for Any Evaluation Account
+              </h2>
+              <p className="text-xs sm:text-sm font-sans text-[#9CA8A1]">
+                Use your Affiliate Points (1 Referral = {AFFILIATE_POINTS_PER_REFERRAL} pts) to claim any Two Step, Three Step, One Step, or Instant Funding evaluation with zero cash fee.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 sm:inline-flex sm:items-center gap-1 p-1 rounded-xl bg-[#090D0A] border border-white/10 shrink-0">
+              {(
+                [
+                  { type: 'two_step' as ChallengeType, label: 'Two Step (110+ pts)' },
+                  { type: 'three_step' as ChallengeType, label: 'Three Step (90+ pts)' },
+                  { type: 'one_step' as ChallengeType, label: 'One Step (150+ pts)' },
+                  { type: 'instant' as ChallengeType, label: 'Instant (240+ pts)' },
+                ]
+              ).map((tab) => {
+                const active = affiliateStoreType === tab.type;
+                return (
+                  <button
+                    key={tab.type}
+                    type="button"
+                    onClick={() => setAffiliateStoreType(tab.type)}
+                    className={`relative px-3 py-2 rounded-lg text-xs font-sans font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                      active ? 'text-[#04120A] font-semibold' : 'text-[#9CA8A1] hover:text-white'
+                    }`}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="affiliate-store-active-pill"
+                        transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                        className="absolute inset-0 rounded-lg bg-[#00E676]"
+                      />
+                    )}
+                    <span className="relative z-10">{tab.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={affiliateStoreType}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"
+          >
+            {storeChallenges.map((ch) => {
+              const ptCost = getChallengePointPrice(ch);
+              const refsNeeded = Math.ceil(ptCost / AFFILIATE_POINTS_PER_REFERRAL);
+              const canAfford = userPoints >= ptCost;
+              const isFeatured5kTwoStep = ch.id === 'two-step-5000';
+
+              return (
+                <div
+                  key={ch.id}
+                  data-testid={`affiliate-point-card-${ch.id}`}
+                  className={`rounded-xl bg-[#090D0A] p-5 sm:p-6 flex flex-col justify-between space-y-5 transition-colors ${
+                    isFeatured5kTwoStep
+                      ? 'border border-[#00E676]/60 shadow-[0_12px_32px_rgba(0,230,118,0.1)]'
+                      : 'border border-white/10 hover:border-[#00E676]/35'
+                  }`}
+                >
+                  <div className="space-y-4">
+                    <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3.5">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-sans font-medium text-[#00E676]">
+                            {ch.typeLabel}
+                          </span>
+                          {isFeatured5kTwoStep && (
+                            <span className="px-2 py-0.5 rounded bg-[#00E676]/15 border border-[#00E676]/35 text-[#00E676] text-[10px] font-sans font-semibold">
+                              Popular · 110 pts
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-2xl font-sans font-semibold text-white mt-1 tabular-nums">
+                          ${ch.accountSize.toLocaleString()}
+                        </div>
+                        <div className="text-xs font-sans text-[#8A968E] mt-0.5 tabular-nums">
+                          Standard Fee: ${ch.priceUsd} USD
+                        </div>
+                      </div>
+                      <div className="text-right px-3 py-2 rounded-lg bg-[#030504] border border-white/10">
+                        <div className="text-[11px] font-sans text-[#8A968E]">Point Price</div>
+                        <div className="text-lg font-sans font-semibold text-[#00E676] tabular-nums">
+                          {ptCost} pts
+                        </div>
+                        <div className="text-[11px] font-sans text-[#9CA8A1] tabular-nums">
+                          {refsNeeded} Referrals
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 text-xs font-sans">
+                      <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
+                        <span className="text-[#9CA8A1]">Profit Target</span>
+                        <span className="font-medium text-white tabular-nums">
+                          {ch.profitTargetPct === 0
+                            ? 'None (Direct Funded)'
+                            : ch.type === 'two_step'
+                            ? `${ch.profitTargetPct}% Step 1 · ${ch.phase2TargetPct ?? 5}% Step 2`
+                            : ch.type === 'three_step'
+                            ? `${ch.profitTargetPct}% / ${ch.phase2TargetPct ?? 6}% / ${ch.phase3TargetPct ?? 6}%`
+                            : `${ch.profitTargetPct}% (Single Step)`}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
+                        <span className="text-[#9CA8A1]">Daily / Max Drawdown</span>
+                        <span className="font-medium text-white tabular-nums">
+                          {ch.dailyDrawdownPct}% / {ch.maxDrawdownPct}%
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between py-1 border-b border-white/[0.05]">
+                        <span className="text-[#9CA8A1]">Leverage &amp; Split</span>
+                        <span className="font-medium text-[#00E676] tabular-nums">
+                          1:{ch.leverage} · Up to {ch.profitSplitPct}%
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between py-1">
+                        <span className="text-[#9CA8A1]">Your Point Status</span>
+                        <span
+                          className={`font-medium tabular-nums ${
+                            canAfford ? 'text-[#00E676]' : 'text-[#9CA8A1]'
+                          }`}
+                        >
+                          {canAfford
+                            ? `Ready to Redeem (${userPoints} pts)`
+                            : `${userPoints} / ${ptCost} pts`}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => handleBuyWithPoints(ch.id)}
+                      className={`w-full py-2.5 px-4 rounded-lg font-sans font-medium text-xs flex items-center justify-center gap-2 cursor-pointer transition-colors ${
+                        canAfford
+                          ? 'bg-[#00E676] hover:bg-[#00C853] text-[#04120A] font-semibold'
+                          : 'bg-[#0D1611] hover:bg-[#14221A] border border-[#00E676]/30 text-[#00E676]'
+                      }`}
+                    >
+                      <Gift className="w-3.5 h-3.5" />
+                      <span>
+                        {canAfford
+                          ? `Buy Now with ${ptCost} Points`
+                          : `Redeem with ${ptCost} Points (${refsNeeded} Referrals)`}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleBuyChallenge(ch.id)}
+                      className="w-full py-2 px-4 rounded-lg bg-[#030504] hover:bg-[#111914] border border-white/10 text-xs font-sans font-medium text-[#9CA8A1] hover:text-white cursor-pointer transition-colors"
+                    >
+                      Or Buy via Crypto Checkout (${ch.priceUsd})
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </motion.div>
+          </AnimatePresence>
+        </section>
+
+        {/* LINK PARTNER CODE + REFERRED TRADERS LEDGER */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <div className="lg:col-span-12 rounded-xl bg-[#090D0A] border border-white/10 p-6 space-y-5">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-base sm:text-lg font-sans font-semibold text-white flex items-center gap-2">
+                  <Users className="w-4 h-4 text-[#00E676]" />
+                  <span>Referred Traders Ledger (+{AFFILIATE_POINTS_PER_REFERRAL} pts each)</span>
+                </h3>
+                <p className="text-xs font-sans text-[#9CA8A1] mt-0.5">
+                  Traders who register with code <span className="text-white font-medium">{activePartnerCode}</span> automatically credit +{AFFILIATE_POINTS_PER_REFERRAL} pts to your balance.
+                </p>
+              </div>
+              <span className="px-3 py-1 rounded-lg bg-[#030504] border border-white/10 text-xs font-sans font-medium text-[#00E676] shrink-0 tabular-nums">
+                {referredUsers.length} Referrals
+              </span>
+            </div>
+
+            {referredUsers.length > 0 ? (
+              <div className="rounded-xl bg-[#030504] border border-white/10 overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs font-sans">
+                  <thead>
+                    <tr className="border-b border-white/10 text-[11px] font-medium text-[#8A968E]">
+                      <th className="py-3 px-4">Trader</th>
+                      <th className="py-3 px-4">Country</th>
+                      <th className="py-3 px-4">Joined</th>
+                      <th className="py-3 px-4 text-right">Points Credited</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.06]">
+                    {referredUsers.map((refUser) => (
+                      <tr key={refUser.uid} className="hover:bg-[#0D130F]">
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-white">{refUser.fullName}</div>
+                          <div className="text-[11px] text-[#8A968E]">{refUser.email}</div>
+                        </td>
+                        <td className="py-3 px-4 text-[#A7B1AA]">{refUser.country}</td>
+                        <td className="py-3 px-4 text-[#8A968E] tabular-nums">
+                          {(refUser.createdAt || '').slice(0, 10)}
+                        </td>
+                        <td className="py-3 px-4 text-right font-semibold text-[#00E676] tabular-nums">
+                          +{AFFILIATE_POINTS_PER_REFERRAL} pts
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="p-6 rounded-xl bg-[#030504] border border-white/10 text-center space-y-1.5">
+                <div className="text-sm font-sans font-medium text-white">No Referrals Recorded Yet</div>
+                <p className="text-xs font-sans text-[#9CA8A1] max-w-md mx-auto leading-relaxed">
+                  Share your referral code <span className="text-white font-medium">{activePartnerCode}</span> or direct invite link above. 11 referrals ({TWO_STEP_5K_POINT_PRICE} pts) unlocks a free $5,000 Two Step Challenge.
+                </p>
+              </div>
+            )}
+
+            {/* APPLY REFERRAL CODE IF SIGNED IN & NOT YET REFERRED */}
+            {user && !user.referredBy && (
+              <form
+                onSubmit={handleApplyPartnerCode}
+                className="p-4 rounded-xl bg-[#030504] border border-white/10 space-y-3"
+              >
+                <div className="text-xs font-sans font-medium text-white">
+                  Referred by a Partner? Link their code (+{AFFILIATE_POINTS_PER_REFERRAL} pts credited to partner)
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <input
+                    type="text"
+                    value={partnerCodeInput}
+                    onChange={(e) => setPartnerCodeInput(e.target.value.toUpperCase())}
+                    placeholder="Enter Partner Referral Code (e.g. APEX-OWNER)"
+                    className="flex-1 px-3.5 py-2 rounded-lg bg-[#090D0A] border border-white/15 text-xs font-sans text-white focus:outline-none focus:border-[#00E676]"
+                  />
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-lg bg-[#00E676] hover:bg-[#00C853] text-[#04120A] font-sans font-semibold text-xs cursor-pointer"
+                  >
+                    Apply Referral Code
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       </main>
@@ -1411,7 +1952,6 @@ export const PublicPages: React.FC = () => {
   // ============================================================================
   // HOMEPAGE (route === 'home') — 12 INSTITUTIONAL DEEP BLACK & EMERALD SECTIONS
   // ============================================================================
-  const twoStepChallenges = availableChallenges.filter((c) => c.type === 'two_step');
 
   return (
     <main data-scroll-container className="bg-transparent text-[#FFFFFF] relative overflow-hidden">
@@ -1626,20 +2166,28 @@ export const PublicPages: React.FC = () => {
                   { type: 'instant' as ChallengeType, label: 'Instant Funded' },
                   { type: 'three_step' as ChallengeType, label: '3-Step Institutional' },
                 ]
-              ).map((t) => (
-                <button
-                  key={t.type}
-                  type="button"
-                  onClick={() => setSelectedType(t.type)}
-                  className={`py-2.5 px-3.5 rounded-[10px] text-xs font-display font-bold transition-all cursor-pointer ${
-                    selectedType === t.type
-                      ? 'bg-[#00E5B0] text-[#03120F] shadow-[0_0_20px_rgba(0,229,176,0.3)]'
-                      : 'text-[#A3BDB8] hover:text-white'
-                  }`}
-                >
-                  {t.label}
-                </button>
-              ))}
+              ).map((t) => {
+                const active = selectedType === t.type;
+                return (
+                  <button
+                    key={t.type}
+                    type="button"
+                    onClick={() => setSelectedType(t.type)}
+                    className={`relative py-2.5 px-3.5 rounded-[10px] text-xs font-display font-bold transition-colors duration-150 cursor-pointer ${
+                      active ? 'text-[#03120F]' : 'text-[#A3BDB8] hover:text-white'
+                    }`}
+                  >
+                    {active && (
+                      <motion.span
+                        layoutId="home-model-active-pill"
+                        transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
+                        className="absolute inset-0 rounded-[10px] bg-[#00E5B0] shadow-[0_0_20px_rgba(0,229,176,0.3)]"
+                      />
+                    )}
+                    <span className="relative z-10">{t.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -1656,150 +2204,182 @@ export const PublicPages: React.FC = () => {
                   </span>
                 </div>
                 <div className="grid grid-cols-3 sm:grid-cols-6 gap-2.5">
-                  {ACCOUNT_SIZES.map((sz) => (
-                    <button
-                      key={sz}
-                      type="button"
-                      onClick={() => setSelectedSize(sz)}
-                      className={`py-3 px-2 rounded-[9px] font-mono text-sm font-bold transition-all cursor-pointer ${
-                        selectedSize === sz
-                          ? 'bg-[#0D130F] border-2 border-[#00E676] text-[#00E676] shadow-[0_0_18px_rgba(0,230,118,0.22)]'
-                          : 'bg-[#030504] border border-white/10 text-[#A7B1AA] hover:text-white hover:border-[#00E676]/35'
-                      }`}
-                    >
-                      ${(sz / 1000).toFixed(0)}K
-                    </button>
-                  ))}
+                  {ACCOUNT_SIZES.map((sz) => {
+                    const activeSize = selectedSize === sz;
+                    return (
+                      <button
+                        key={sz}
+                        type="button"
+                        onClick={() => setSelectedSize(sz)}
+                        className={`relative py-3 px-2 rounded-[9px] font-mono text-sm font-bold border transition-colors duration-150 cursor-pointer ${
+                          activeSize
+                            ? 'border-[#00E676] text-[#00E676]'
+                            : 'bg-[#030504] border-white/10 text-[#A7B1AA] hover:text-white hover:border-[#00E676]/35'
+                        }`}
+                      >
+                        {activeSize && (
+                          <motion.span
+                            layoutId="home-size-active-pill"
+                            transition={{ duration: 0.22, ease: [0.16, 1, 0.3, 1] }}
+                            className="absolute inset-0 rounded-[9px] bg-[#0D130F] ring-1 ring-[#00E676]/60 shadow-[0_0_18px_rgba(0,230,118,0.22)]"
+                          />
+                        )}
+                        <span className="relative z-10">${(sz / 1000).toFixed(0)}K</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                {[
-                  {
-                    label: selectedType === 'instant' ? 'Profit Target' : 'Phase 1 Profit Target',
-                    value:
-                      selectedType === 'instant' || selectedChallenge.profitTargetPct === 0
-                        ? 'None (Direct Funded)'
-                        : `${selectedChallenge.profitTargetPct}% ($${((selectedChallenge.accountSize * selectedChallenge.profitTargetPct) / 100).toLocaleString()})`,
-                    highlight: true,
-                  },
-                  {
-                    label: 'Subsequent Phase Target',
-                    value:
-                      selectedType === 'two_step'
-                        ? `5% ($${(selectedChallenge.accountSize * 0.05).toLocaleString()})`
-                        : selectedType === 'three_step'
-                        ? '5% (Phase 2 & Phase 3)'
-                        : 'None (Single Phase)',
-                    highlight: false,
-                  },
-                  {
-                    label: 'Daily Drawdown Limit',
-                    value: `${selectedChallenge.dailyDrawdownPct}% ($${((selectedChallenge.accountSize * selectedChallenge.dailyDrawdownPct) / 100).toLocaleString()})`,
-                    highlight: false,
-                  },
-                  {
-                    label: 'Maximum Overall Drawdown',
-                    value: `${selectedChallenge.maxDrawdownPct}% ($${((selectedChallenge.accountSize * selectedChallenge.maxDrawdownPct) / 100).toLocaleString()})`,
-                    highlight: false,
-                  },
-                  {
-                    label: 'Minimum Trading Days',
-                    value: `${selectedChallenge.minTradingDays} Days · Unlimited Time`,
-                    highlight: false,
-                  },
-                  {
-                    label: 'Institutional Leverage',
-                    value: `1:${selectedChallenge.leverage}`,
-                    highlight: true,
-                  },
-                  {
-                    label: 'Trader Profit Split',
-                    value: `Up to ${selectedChallenge.profitSplitPct}%`,
-                    highlight: true,
-                  },
-                  {
-                    label: 'Trading Rules & Holding',
-                    value: 'News, Overnight & Weekend Allowed',
-                    highlight: false,
-                  },
-                ].map((spec) => (
-                  <div
-                    key={spec.label}
-                    className="p-4 rounded-[12px] bg-[#090D0A] border border-[#00E676]/15 flex items-center justify-between gap-2"
-                  >
-                    <span className="text-xs sm:text-sm text-[#A7B1AA]">{spec.label}</span>
-                    <span
-                      className={`font-mono text-xs sm:text-sm font-bold ${
-                        spec.highlight ? 'text-[#00E676]' : 'text-[#FFFFFF]'
-                      }`}
+              <AnimatePresence mode="wait" initial={false}>
+                <motion.div
+                  key={`${selectedType}-${selectedSize}-specs`}
+                  initial={{ opacity: 0, y: 6 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -4 }}
+                  transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-3.5"
+                >
+                  {[
+                    {
+                      label: selectedType === 'instant' ? 'Profit Target' : 'Phase 1 Profit Target',
+                      value:
+                        selectedType === 'instant' || selectedChallenge.profitTargetPct === 0
+                          ? 'None (Direct Funded)'
+                          : `${selectedChallenge.profitTargetPct}% ($${((selectedChallenge.accountSize * selectedChallenge.profitTargetPct) / 100).toLocaleString()})`,
+                      highlight: true,
+                    },
+                    {
+                      label: 'Subsequent Phase Target',
+                      value:
+                        selectedType === 'two_step'
+                          ? `5% ($${(selectedChallenge.accountSize * 0.05).toLocaleString()})`
+                          : selectedType === 'three_step'
+                          ? `6% ($${(selectedChallenge.accountSize * 0.06).toLocaleString()}) · Phase 2 & 3`
+                          : 'None (Single Phase)',
+                      highlight: false,
+                    },
+                    {
+                      label: 'Daily Drawdown Limit',
+                      value: `${selectedChallenge.dailyDrawdownPct}% ($${((selectedChallenge.accountSize * selectedChallenge.dailyDrawdownPct) / 100).toLocaleString()})`,
+                      highlight: false,
+                    },
+                    {
+                      label: 'Maximum Overall Drawdown',
+                      value: `${selectedChallenge.maxDrawdownPct}% ($${((selectedChallenge.accountSize * selectedChallenge.maxDrawdownPct) / 100).toLocaleString()})`,
+                      highlight: false,
+                    },
+                    {
+                      label: 'Minimum Trading Days',
+                      value:
+                        selectedType === 'instant'
+                          ? '0 Eval · 5 Payout Days · Unlimited Time'
+                          : `${selectedChallenge.minTradingDays} Days · Unlimited Time`,
+                      highlight: false,
+                    },
+                    {
+                      label: 'Institutional Leverage',
+                      value: `1:${selectedChallenge.leverage}`,
+                      highlight: true,
+                    },
+                    {
+                      label: 'Trader Profit Split',
+                      value: `Up to ${selectedChallenge.profitSplitPct}%`,
+                      highlight: true,
+                    },
+                    {
+                      label: 'Consistency & Holding Rules',
+                      value:
+                        selectedType === 'instant'
+                          ? '15% Consistency · News & Weekend Allowed'
+                          : '0% Consistency · News & Weekend Allowed',
+                      highlight: false,
+                    },
+                  ].map((spec) => (
+                    <div
+                      key={spec.label}
+                      className="p-4 rounded-[12px] bg-[#090D0A] border border-[#00E676]/15 flex items-center justify-between gap-2 transition-colors hover:border-[#00E676]/35"
                     >
-                      {spec.value}
-                    </span>
-                  </div>
-                ))}
-              </div>
+                      <span className="text-xs sm:text-sm text-[#A7B1AA]">{spec.label}</span>
+                      <span
+                        className={`font-mono text-xs sm:text-sm font-bold ${
+                          spec.highlight ? 'text-[#00E676]' : 'text-[#FFFFFF]'
+                        }`}
+                      >
+                        {spec.value}
+                      </span>
+                    </div>
+                  ))}
+                </motion.div>
+              </AnimatePresence>
             </div>
 
             {/* Right 5 Columns: Challenge Purchase Summary Card */}
-            <div
-              style={{ '--reveal-delay': '140ms' } as React.CSSProperties}
-              className="lg:col-span-5 rounded-[22px] bg-[#071318]/95 backdrop-blur-xl border border-[#00E5B0]/30 p-6 sm:p-7 space-y-6 shadow-[0_28px_80px_rgba(0,0,0,0.95)] apex-reveal-init"
-            >
-              <div className="flex items-start justify-between gap-4 border-b border-[#00E5B0]/15 pb-5">
-                <div>
-                  <div className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[#00E5B0]">
-                    {selectedChallenge.typeLabel}
+            <AnimatePresence mode="wait" initial={false}>
+              <motion.div
+                key={selectedChallenge.id}
+                initial={{ opacity: 0, y: 8, scale: 0.99 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -6, scale: 0.99 }}
+                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
+                style={{ '--reveal-delay': '140ms' } as React.CSSProperties}
+                className="lg:col-span-5 rounded-[22px] bg-[#071318]/98 border border-[#00E5B0]/30 p-6 sm:p-7 space-y-6 shadow-[0_28px_80px_rgba(0,0,0,0.95)]"
+              >
+                <div className="flex items-start justify-between gap-4 border-b border-[#00E5B0]/15 pb-5">
+                  <div>
+                    <div className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[#00E5B0]">
+                      {selectedChallenge.typeLabel}
+                    </div>
+                    <h3 className="text-2xl sm:text-3xl font-display font-extrabold text-[#FFFFFF] mt-1">
+                      ${selectedChallenge.accountSize.toLocaleString()} Account
+                    </h3>
+                    <div className="text-xs text-[#728F8A] mt-1">
+                      One-time evaluation fee · 100% refundable on 1st payout
+                    </div>
                   </div>
-                  <h3 className="text-2xl sm:text-3xl font-display font-extrabold text-[#FFFFFF] mt-1">
-                    ${selectedChallenge.accountSize.toLocaleString()} Account
-                  </h3>
-                  <div className="text-xs text-[#728F8A] mt-1">
-                    One-time evaluation fee · 100% refundable on 1st payout
+                  <div className="px-4 py-3 rounded-[14px] bg-[#050E13] border border-[#00E5B0]/35 text-right shrink-0">
+                    <div className="text-[10px] font-mono uppercase text-[#728F8A]">Evaluation Fee</div>
+                    <div className="text-2xl sm:text-3xl font-mono font-extrabold text-[#00E5B0]">
+                      ${selectedChallenge.priceUsd}
+                    </div>
                   </div>
                 </div>
-                <div className="px-4 py-3 rounded-[14px] bg-[#050E13] border border-[#00E5B0]/35 text-right shrink-0">
-                  <div className="text-[10px] font-mono uppercase text-[#728F8A]">Evaluation Fee</div>
-                  <div className="text-2xl sm:text-3xl font-mono font-extrabold text-[#00E5B0]">
-                    ${selectedChallenge.priceUsd}
-                  </div>
+
+                <div className="space-y-3 text-xs sm:text-sm">
+                  {[
+                    '100% Challenge Fee refunded with your first funded payout',
+                    'Flexible Capital Tiers from $5,000 to $200,000 USD',
+                    'Full access to the in-house FUNDED APEX Trading Terminal',
+                    'Supports official Admin promotional discount coupons',
+                  ].map((perk) => (
+                    <div key={perk} className="flex items-center gap-3 text-[#FFFFFF]">
+                      <span className="w-5 h-5 rounded-[8px] bg-[#00E5B0]/15 border border-[#00E5B0]/40 flex items-center justify-center shrink-0">
+                        <Check className="w-3.5 h-3.5 text-[#00E5B0]" />
+                      </span>
+                      <span className="text-[#A3BDB8]">{perk}</span>
+                    </div>
+                  ))}
                 </div>
-              </div>
 
-              <div className="space-y-3 text-xs sm:text-sm">
-                {[
-                  '100% Challenge Fee refunded with your first funded payout',
-                  'Instant checkout via USDT (BEP-20 · BNB Smart Chain)',
-                  'Full access to the in-house FUNDED APEX Trading Terminal',
-                  'Supports official Admin promotional discount coupons',
-                ].map((perk) => (
-                  <div key={perk} className="flex items-center gap-3 text-[#FFFFFF]">
-                    <span className="w-5 h-5 rounded-[8px] bg-[#00E5B0]/15 border border-[#00E5B0]/40 flex items-center justify-center shrink-0">
-                      <Check className="w-3.5 h-3.5 text-[#00E5B0]" />
-                    </span>
-                    <span className="text-[#A3BDB8]">{perk}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div className="space-y-3 pt-1">
-                <button
-                  type="button"
-                  onClick={() => handleBuyChallenge(selectedChallenge.id)}
-                  className="w-full py-3.5 px-6 rounded-[14px] bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] font-display font-bold text-sm sm:text-base flex items-center justify-center gap-2 cursor-pointer transition-all shadow-[0_12px_32px_rgba(0,229,176,0.35)] hover:-translate-y-0.5"
-                >
-                  <span>Start Challenge — ${selectedChallenge.priceUsd}</span>
-                  <ArrowRight className="w-4 h-4 stroke-[2.5]" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDetailModalChallenge(selectedChallenge)}
-                  className="w-full py-3 px-4 rounded-[14px] bg-[#050E13] hover:bg-[#08151B] border border-white/12 text-xs sm:text-sm font-semibold text-[#A3BDB8] hover:text-white cursor-pointer transition-all"
-                >
-                  View Full Program Specification
-                </button>
-              </div>
-            </div>
+                <div className="space-y-3 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => handleBuyChallenge(selectedChallenge.id)}
+                    className="w-full py-3.5 px-6 rounded-[14px] bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] font-display font-bold text-sm sm:text-base flex items-center justify-center gap-2 cursor-pointer transition-all shadow-[0_12px_32px_rgba(0,229,176,0.35)] hover:-translate-y-0.5"
+                  >
+                    <span>Start Challenge — ${selectedChallenge.priceUsd}</span>
+                    <ArrowRight className="w-4 h-4 stroke-[2.5]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDetailModalChallenge(selectedChallenge)}
+                    className="w-full py-3 px-4 rounded-[14px] bg-[#050E13] hover:bg-[#08151B] border border-white/12 text-xs sm:text-sm font-semibold text-[#A3BDB8] hover:text-white cursor-pointer transition-all"
+                  >
+                    View Full Program Specification
+                  </button>
+                </div>
+              </motion.div>
+            </AnimatePresence>
           </div>
         </div>
       </section>
@@ -2023,16 +2603,25 @@ export const PublicPages: React.FC = () => {
                       {item.q}
                     </span>
                     <ChevronDown
-                      className={`w-4 h-4 text-[#A3BDB8] shrink-0 transition-transform ${
+                      className={`w-4 h-4 text-[#A3BDB8] shrink-0 transition-transform duration-200 ${
                         isOpen ? 'rotate-180 text-[#00E5B0]' : ''
                       }`}
                     />
                   </button>
-                  {isOpen && (
-                    <div className="px-6 pb-5 pt-2 text-xs sm:text-sm text-[#A3BDB8] leading-relaxed border-t border-[#00E5B0]/12">
-                      {item.a}
+                  <div
+                    aria-hidden={!isOpen}
+                    className={`grid transition-[grid-template-rows,opacity] duration-220 ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                      isOpen
+                        ? 'grid-rows-[1fr] opacity-100'
+                        : 'grid-rows-[0fr] opacity-0 pointer-events-none'
+                    }`}
+                  >
+                    <div className="overflow-hidden min-h-0">
+                      <div className="px-6 pb-5 pt-2 text-xs sm:text-sm text-[#A3BDB8] leading-relaxed border-t border-[#00E5B0]/12">
+                        {item.a}
+                      </div>
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             })}

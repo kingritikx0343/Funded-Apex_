@@ -317,10 +317,11 @@ export const MoonlitLiquidWaterBackground: React.FC = memo(() => {
 
     const tick = (nowMs: number) => {
       if (disposed) return;
-      if (document.hidden) {
+      if (document.hidden || document.body?.style.overflow === 'hidden') {
+        lastTimeMs = nowMs;
         timerId = window.setTimeout(() => {
           if (!disposed) frameId = requestAnimationFrame(tick);
-        }, 250);
+        }, 200);
         return;
       }
 

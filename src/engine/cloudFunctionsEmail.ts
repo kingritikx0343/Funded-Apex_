@@ -922,3 +922,228 @@ export async function onTradingAccountCredentialsWrite(
   await enqueueMail(mailPayload);
   return mailPayload;
 }
+
+export interface AdminEmailFormatTemplate {
+  id: string;
+  category: 'Onboarding' | 'Billing & Access' | 'Evaluation' | 'Payouts' | 'Risk & Security' | 'Marketing';
+  title: string;
+  description: string;
+  badgeText: string;
+  badgeColor: string;
+  subjectTemplate: string;
+  headlineTemplate: string;
+  bodyTemplate: string;
+  ctaLabel: string;
+  ctaUrl: string;
+}
+
+export interface AdminEmailFormatVars {
+  traderName?: string;
+  traderEmail?: string;
+  accountNumber?: string;
+  challengeTitle?: string;
+  accountSize?: string;
+  terminalUserId?: string;
+  terminalPassword?: string;
+  amountUsd?: string;
+  walletAddress?: string;
+  reason?: string;
+  promoCode?: string;
+  discountPct?: string;
+  stepInfo?: string;
+}
+
+export const ADMIN_EMAIL_FORMATS: AdminEmailFormatTemplate[] = [
+  {
+    id: 'welcome_registration',
+    category: 'Onboarding',
+    title: 'Welcome & Account Registration',
+    description: 'Official welcome message when a trader registers their email profile.',
+    badgeText: 'ACCOUNT ACTIVE',
+    badgeColor: '#00FFA3',
+    subjectTemplate: '[FUNDED APEX] Welcome {{TRADER_NAME}} — Your Trader Profile Is Active',
+    headlineTemplate: 'Welcome to FUNDED APEX Institutional Prop Trading',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nWelcome to FUNDED APEX! Your client profile ({{TRADER_EMAIL}}) has been verified and activated.\n\nYou can now select an Instant, 1-Step, 2-Step, or 3-Step Challenge directly from your Client Area and track live risk telemetry.\n\nSupport Desk: fundedapexsupport@gmail.com',
+    ctaLabel: 'Open Client Area →',
+    ctaUrl: 'https://fundedapex.com/?page=dashboard',
+  },
+  {
+    id: 'challenge_purchase_pending',
+    category: 'Billing & Access',
+    title: 'Challenge Purchase Receipt & Verification',
+    description: 'Confirms challenge order received and crypto/card settlement under review.',
+    badgeText: 'ORDER RECEIVED',
+    badgeColor: '#38BDF8',
+    subjectTemplate: '[FUNDED APEX] Purchase Receipt: {{CHALLENGE_TITLE}} — Verification in Progress',
+    headlineTemplate: 'Challenge Purchase Order Received ({{CHALLENGE_TITLE}})',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nWe have received your payment submission for {{CHALLENGE_TITLE}} ({{ACCOUNT_SIZE}}).\n\n• Amount Settled: {{AMOUNT_USD}}\n• Destination / Ref: {{WALLET_ADDRESS}}\n\nOur billing desk is completing final blockchain/settlement verification. Once approved, your Trading Account & Terminal Credentials will be delivered immediately.',
+    ctaLabel: 'Check Order Status →',
+    ctaUrl: 'https://fundedapex.com/?page=dashboard',
+  },
+  {
+    id: 'terminal_credentials',
+    category: 'Billing & Access',
+    title: 'Terminal User ID & Password Delivery',
+    description: 'Delivers private Trading Terminal login credentials for an active account.',
+    badgeText: 'CREDENTIALS READY',
+    badgeColor: '#00FFA3',
+    subjectTemplate: '[FUNDED APEX] Terminal Credentials Ready — Account #{{ACCOUNT_NUMBER}}',
+    headlineTemplate: 'Your Trading Terminal Access Is Active (#{{ACCOUNT_NUMBER}})',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nYour FUNDED APEX evaluation account #{{ACCOUNT_NUMBER}} ({{CHALLENGE_TITLE}}) is ready for execution.\n\n• Account Number: #{{ACCOUNT_NUMBER}}\n• Terminal User ID: {{TERMINAL_USER_ID}}\n• Terminal Password: {{TERMINAL_PASSWORD}}\n• Account Capital: {{ACCOUNT_SIZE}}\n\nKeep these credentials confidential. Never breach Daily or Maximum Drawdown limits.',
+    ctaLabel: 'Launch Trading Terminal →',
+    ctaUrl: 'https://fundedapex.com/?page=terminal',
+  },
+  {
+    id: 'phase_passed',
+    category: 'Evaluation',
+    title: 'Evaluation Step Passed (Step Promotion)',
+    description: 'Notifies trader that Step 1 or Step 2 profit target is met and next step started.',
+    badgeText: 'STEP PASSED',
+    badgeColor: '#00FFA3',
+    subjectTemplate: '[FUNDED APEX] {{STEP_INFO}} Passed! Account #{{ACCOUNT_NUMBER}} Promoted',
+    headlineTemplate: 'Congratulations! You Passed {{STEP_INFO}} on #{{ACCOUNT_NUMBER}}',
+    bodyTemplate:
+      'Congratulations {{TRADER_NAME}},\n\nYou achieved the realized profit target for {{STEP_INFO}} on Account #{{ACCOUNT_NUMBER}} ({{CHALLENGE_TITLE}}) with full drawdown compliance.\n\nYour accumulated profits remain preserved, and your next evaluation step is now active on the same Terminal credentials:\n• Terminal User ID: {{TERMINAL_USER_ID}}\n\nComplete the remaining step target to unlock Funded Payouts.',
+    ctaLabel: 'Continue in Terminal →',
+    ctaUrl: 'https://fundedapex.com/?page=terminal',
+  },
+  {
+    id: 'funded_account_activated',
+    category: 'Evaluation',
+    title: 'All Steps Passed — Funded Payouts Unlocked',
+    description: 'Final congratulations once trader passes evaluation and unlocks real payouts.',
+    badgeText: 'FUNDED STATUS',
+    badgeColor: '#00FFA3',
+    subjectTemplate: '[FUNDED APEX] Evaluation Completed! #{{ACCOUNT_NUMBER}} Is Now Funded',
+    headlineTemplate: 'All Evaluation Steps Passed — Payouts Now Unlocked',
+    bodyTemplate:
+      'Congratulations {{TRADER_NAME}},\n\nYou have officially passed all required steps for {{CHALLENGE_TITLE}} on Account #{{ACCOUNT_NUMBER}} ({{ACCOUNT_SIZE}}).\n\nYour account is now promoted to Funded Status. Real profit payouts are unlocked and can be requested directly from your Client Area Payouts tab once positions are closed.',
+    ctaLabel: 'Open Payouts Tab →',
+    ctaUrl: 'https://fundedapex.com/?page=dashboard',
+  },
+  {
+    id: 'payout_approved',
+    category: 'Payouts',
+    title: 'Payout Request Approved & Remitted',
+    description: 'Confirms treasury approval and transfer of trader profits to their wallet.',
+    badgeText: 'PAYOUT APPROVED',
+    badgeColor: '#00FFA3',
+    subjectTemplate: '[FUNDED APEX] Payout Approved ({{AMOUNT_USD}}) — Account #{{ACCOUNT_NUMBER}}',
+    headlineTemplate: 'Profit Payout Approved & Disbursed ({{AMOUNT_USD}})',
+    bodyTemplate:
+      'Congratulations {{TRADER_NAME}},\n\nYour profit withdrawal of {{AMOUNT_USD}} from Account #{{ACCOUNT_NUMBER}} ({{CHALLENGE_TITLE}}) has been verified and approved by the FUNDED APEX Treasury Desk.\n\n• Remittance Amount: {{AMOUNT_USD}}\n• Destination Wallet: {{WALLET_ADDRESS}}\n• Admin / Tx Note: {{REASON}}\n\nThank you for trading with discipline on FUNDED APEX.',
+    ctaLabel: 'View Payout History →',
+    ctaUrl: 'https://fundedapex.com/?page=dashboard',
+  },
+  {
+    id: 'payout_rejected',
+    category: 'Payouts',
+    title: 'Payout Request Rejected & Balance Refunded',
+    description: 'Explains why a payout request was rejected and confirms balance restoration.',
+    badgeText: 'PAYOUT REJECTED',
+    badgeColor: '#FB7185',
+    subjectTemplate: '[FUNDED APEX] Payout Request Rejected & Refunded — #{{ACCOUNT_NUMBER}}',
+    headlineTemplate: 'Payout Request Update — Action Required (#{{ACCOUNT_NUMBER}})',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nYour payout request of {{AMOUNT_USD}} for Account #{{ACCOUNT_NUMBER}} ({{CHALLENGE_TITLE}}) could not be approved at this time.\n\n• Destination Submitted: {{WALLET_ADDRESS}}\n• Rejection Reason: {{REASON}}\n\nYour deducted trading profit has been cleanly refunded to your account balance. Please review the reason above and resubmit from your Client Area.',
+    ctaLabel: 'Review in Client Area →',
+    ctaUrl: 'https://fundedapex.com/?page=dashboard',
+  },
+  {
+    id: 'account_breached',
+    category: 'Risk & Security',
+    title: 'Account Breached / Drawdown Violation',
+    description: 'Formal disqualification notice when Daily or Max Drawdown is breached.',
+    badgeText: 'RISK BREACH',
+    badgeColor: '#FB7185',
+    subjectTemplate: '[FUNDED APEX] Account #{{ACCOUNT_NUMBER}} Disqualified — Rule Breach Notice',
+    headlineTemplate: 'Automated Risk Notice: Account #{{ACCOUNT_NUMBER}} Breached',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nOur automated risk engine detected a drawdown violation on Account #{{ACCOUNT_NUMBER}} ({{CHALLENGE_TITLE}}).\n\n• Breach Reason: {{REASON}}\n\nTrading access and payout eligibility for this account have been locked. Open positions were liquidated at breach trigger. Use promo code {{PROMO_CODE}} if you wish to start a fresh evaluation.',
+    ctaLabel: 'Start New Challenge →',
+    ctaUrl: 'https://fundedapex.com/?page=challenges',
+  },
+  {
+    id: 'password_reset',
+    category: 'Risk & Security',
+    title: 'Password Reset & Security Alert',
+    description: 'Delivers temporary/updated password or security reset instructions.',
+    badgeText: 'SECURITY UPDATE',
+    badgeColor: '#FBBF24',
+    subjectTemplate: '[FUNDED APEX] Password & Account Security Update — {{TRADER_EMAIL}}',
+    headlineTemplate: 'Security Notice: Account Credentials Updated',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nA password update was processed for your FUNDED APEX profile ({{TRADER_EMAIL}}).\n\n• Updated Credential / Token: {{TERMINAL_PASSWORD}}\n\nIf you did not initiate this request, contact fundedapexsupport@gmail.com immediately and rotate your password from your Profile settings.',
+    ctaLabel: 'Open Account Security →',
+    ctaUrl: 'https://fundedapex.com/?page=dashboard',
+  },
+  {
+    id: 'vip_promo_notice',
+    category: 'Marketing',
+    title: 'VIP Promo Voucher & General Announcement',
+    description: 'Customizable promotional offer or compliance broadcast format.',
+    badgeText: 'VIP OFFER',
+    badgeColor: '#A855F7',
+    subjectTemplate: '[FUNDED APEX] Exclusive {{DISCOUNT_PCT}} OFF Evaluation Voucher ({{PROMO_CODE}})',
+    headlineTemplate: 'Unlock {{DISCOUNT_PCT}} OFF Your Next Funded Challenge',
+    bodyTemplate:
+      'Hello {{TRADER_NAME}},\n\nAs an active FUNDED APEX trader, you are eligible for an exclusive {{DISCOUNT_PCT}} discount on Instant, 1-Step, 2-Step, and 3-Step programs up to $200,000.\n\n• Promo Code: {{PROMO_CODE}}\n• Discount: {{DISCOUNT_PCT}} OFF\n\nApply code {{PROMO_CODE}} at checkout before the campaign window closes.',
+    ctaLabel: 'Claim Discount Now →',
+    ctaUrl: 'https://fundedapex.com/?page=challenges',
+  },
+];
+
+export function renderAdminEmailFormat(
+  formatId: string,
+  vars: AdminEmailFormatVars = {}
+): {
+  template: AdminEmailFormatTemplate;
+  subject: string;
+  headline: string;
+  bodyText: string;
+  fullCopyText: string;
+} {
+  const template =
+    ADMIN_EMAIL_FORMATS.find((f) => f.id === formatId) || ADMIN_EMAIL_FORMATS[0];
+
+  const tokenMap: Record<string, string> = {
+    '{{TRADER_NAME}}': vars.traderName?.trim() || '[Trader Name]',
+    '{{TRADER_EMAIL}}': vars.traderEmail?.trim() || '[trader@email.com]',
+    '{{ACCOUNT_NUMBER}}': vars.accountNumber?.trim() || '[FA-000000]',
+    '{{CHALLENGE_TITLE}}': vars.challengeTitle?.trim() || '[Challenge Program]',
+    '{{ACCOUNT_SIZE}}': vars.accountSize?.trim() || '[$50,000]',
+    '{{TERMINAL_USER_ID}}': vars.terminalUserId?.trim() || '[APEX-ID-0000]',
+    '{{TERMINAL_PASSWORD}}': vars.terminalPassword?.trim() || '[APEX-0000]',
+    '{{AMOUNT_USD}}': vars.amountUsd?.trim() || '[$0.00 USD]',
+    '{{WALLET_ADDRESS}}': vars.walletAddress?.trim() || '[Destination Wallet Address]',
+    '{{REASON}}': vars.reason?.trim() || '[Enter Reason / Reference Here]',
+    '{{PROMO_CODE}}': vars.promoCode?.trim() || '[APEX20]',
+    '{{DISCOUNT_PCT}}': vars.discountPct?.trim() || '[20%]',
+    '{{STEP_INFO}}': vars.stepInfo?.trim() || '[Step 1 of 2]',
+  };
+
+  const replaceTokens = (raw: string) => {
+    let out = raw;
+    for (const [token, val] of Object.entries(tokenMap)) {
+      out = out.split(token).join(val);
+    }
+    return out;
+  };
+
+  const subject = replaceTokens(template.subjectTemplate);
+  const headline = replaceTokens(template.headlineTemplate);
+  const bodyText = replaceTokens(template.bodyTemplate);
+  const fullCopyText = `Subject: ${subject}\n\n${bodyText}\n\n${template.ctaLabel} ${template.ctaUrl}`;
+
+  return {
+    template,
+    subject,
+    headline,
+    bodyText,
+    fullCopyText,
+  };
+}
+

@@ -54,6 +54,9 @@ import {
   computeLivePlatformStatistics,
   resolveChallengeRulesForAccount,
   getMinimumPhaseStartBalance,
+  validateAndComputeSlTpPreview,
+  validatePayoutRequestAgainstRules,
+  getMarketStatus,
 } from '../engine/tradingEngine';
 import {
   buildTerminalCredentialsEmailPayload,
@@ -79,6 +82,8 @@ import {
   LeaderboardEntry,
   INITIAL_TESTIMONIALS,
   TestimonialRecord,
+  AFFILIATE_POINTS_PER_REFERRAL,
+  getChallengePointPrice,
 } from '../data/platformData';
 import {
   fetchInitialLiveQuotes,
@@ -88,6 +93,7 @@ import {
 } from '../engine/liveMarketFeed';
 import {
   computeStripeCheckoutBreakdown,
+  formatCouponTargetLabel,
   hashPasswordVerifier,
   verifyUserCredentials,
 } from '../engine/stripeCheckout';
@@ -96,6 +102,34 @@ import {
   mergeUserProfileRecords,
   isSeedPasswordRecord,
 } from '../engine/userVault';
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+  timeoutMs = 2500
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs = 2500, label = 'Request'): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
 
 export type PageRoute =
   | 'home'
@@ -132,6 +166,7 @@ export interface UserProfileData {
   referredBy?: string;
   role: UserRole;
   rewardPoints: number;
+  pointsUpdatedAt?: number;
   lastSpinDate?: string;
   mfaEnabled: boolean;
   deletionRequested: boolean;
@@ -183,6 +218,9 @@ export interface AdminCouponRecord {
   discountPct: number;
   description: string;
   active: boolean;
+  targetChallengeId?: string;
+  targetChallengeTitle?: string;
+  singleEvaluationOnly?: boolean;
   createdAt: string;
 }
 
@@ -301,8 +339,11 @@ export const INITIAL_ADMIN_COUPONS: AdminCouponRecord[] = [
     id: 'adm-cpn-5k',
     code: '5K30OFF',
     discountPct: 30,
-    description: '$5K Starter Challenge Promo — Only on $10 Code',
+    description: '$5K Starter Challenge Promo — Only on $5K 2-Step Evaluation',
     active: true,
+    targetChallengeId: 'two-step-5000',
+    targetChallengeTitle: '$5,000 Two Step Challenge',
+    singleEvaluationOnly: true,
     createdAt: '2026-11-06T00:00:00.000Z',
   },
   {
@@ -311,6 +352,9 @@ export const INITIAL_ADMIN_COUPONS: AdminCouponRecord[] = [
     discountPct: 30,
     description: 'Festive Starter Offer Promo Code',
     active: true,
+    targetChallengeId: 'ALL',
+    targetChallengeTitle: 'All Evaluations',
+    singleEvaluationOnly: false,
     createdAt: '2026-11-01T10:00:00.000Z',
   },
   {
@@ -319,6 +363,9 @@ export const INITIAL_ADMIN_COUPONS: AdminCouponRecord[] = [
     discountPct: 20,
     description: '20% OFF Official Evaluation Discount Coupon',
     active: true,
+    targetChallengeId: 'ALL',
+    targetChallengeTitle: 'All Evaluations',
+    singleEvaluationOnly: false,
     createdAt: '2026-11-01T10:00:00.000Z',
   },
   {
@@ -327,6 +374,9 @@ export const INITIAL_ADMIN_COUPONS: AdminCouponRecord[] = [
     discountPct: 50,
     description: '50% OFF VIP Prop Trader Promo Code',
     active: true,
+    targetChallengeId: 'ALL',
+    targetChallengeTitle: 'All Evaluations',
+    singleEvaluationOnly: false,
     createdAt: '2026-11-01T10:00:00.000Z',
   },
 ];
@@ -339,6 +389,7 @@ export interface PlatformContextValue {
   quotes: Record<SymbolCode, MarketQuote>;
   liveFeedStatus: LiveFeedStatus;
   refreshLiveQuotes: () => Promise<void>;
+  syncSymbolLiveQuote: (symbol: SymbolCode, bid: number, ask?: number) => void;
   refreshVaultData: () => Promise<void>;
   challenges: ChallengeTemplate[];
   accounts: TradingAccountRecord[];
@@ -449,6 +500,23 @@ export interface PlatformContextValue {
     amountPaidUsd: number;
   }) => TradingAccountRecord;
   startChallengeEvaluation: (challengeId: string) => TradingAccountRecord;
+  purchaseEvaluationWithPoints: (challengeId: string) => {
+    ok: boolean;
+    account?: TradingAccountRecord;
+    message: string;
+  };
+  applyReferralCode: (referralCodeInput: string) => {
+    ok: boolean;
+    message: string;
+  };
+  adminAdjustUserPoints: (
+    targetUid: string,
+    pointsValue: number,
+    mode?: 'add' | 'set'
+  ) => {
+    ok: boolean;
+    message: string;
+  };
   redeemSpinCodeOrAddAccount: (codeInput: string, fallbackChallengeId?: string) => {
     ok: boolean;
     account?: TradingAccountRecord;
@@ -456,7 +524,10 @@ export interface PlatformContextValue {
     message: string;
   };
   submitOrder: (input: OrderSubmissionInput) => { ok: boolean; error?: string; order?: TradeOrderRecord };
-  modifyOrder: (orderId: string, updates: { stopLoss: number; takeProfit: number; entryPrice?: number }) => { ok: boolean; error?: string };
+  modifyOrder: (
+    orderId: string,
+    updates: { stopLoss: number; takeProfit: number; entryPrice?: number; allowAutoClamp?: boolean }
+  ) => { ok: boolean; error?: string };
   closePosition: (orderId: string, partialRatio?: number) => { ok: boolean; error?: string };
   cancelPendingOrder: (orderId: string) => { ok: boolean; error?: string };
   requestAccountPayout: (input: {
@@ -532,7 +603,24 @@ export interface PlatformContextValue {
     code: string;
     discountPct: number;
     description: string;
+    targetChallengeId?: string;
+    targetChallengeTitle?: string;
+    singleEvaluationOnly?: boolean;
   }) => { ok: boolean; error?: string; coupon?: AdminCouponRecord };
+  adminUpdateCoupon: (
+    couponId: string,
+    updates: Partial<
+      Pick<
+        AdminCouponRecord,
+        | 'targetChallengeId'
+        | 'targetChallengeTitle'
+        | 'singleEvaluationOnly'
+        | 'discountPct'
+        | 'description'
+        | 'active'
+      >
+    >
+  ) => void;
   adminToggleCoupon: (couponId: string) => void;
   adminDeleteCoupon: (couponId: string) => void;
   adminSavePaymentSettings: (settings: PaymentGatewaySettings) => void;
@@ -805,9 +893,17 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [quotes, setQuotes] = useState<Record<SymbolCode, MarketQuote>>(generateInitialQuotes);
   const quotesRef = useRef<Record<SymbolCode, MarketQuote>>(generateInitialQuotes());
 
-  // Sync quotesRef whenever quotes state changes (state update is still needed for React-reactive components)
+  // Sync quotesRef whenever quotes state changes without overwriting newer sub-second WS ticks
   useEffect(() => {
-    quotesRef.current = quotes;
+    const merged = { ...quotesRef.current };
+    (Object.keys(quotes) as SymbolCode[]).forEach((sym) => {
+      const stateQuote = quotes[sym];
+      const refQuote = merged[sym];
+      if (stateQuote && (!refQuote || (stateQuote.timestamp || 0) >= (refQuote.timestamp || 0))) {
+        merged[sym] = stateQuote;
+      }
+    });
+    quotesRef.current = merged;
   }, [quotes]);
 
   const [liveFeedStatus, setLiveFeedStatus] = useState<LiveFeedStatus>({
@@ -823,9 +919,11 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (saved) {
         const parsed: ChallengeTemplate[] = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((ch) =>
-            ch.type === 'instant' ? { ...ch, profitTargetPct: 0 } : ch
-          );
+          return parsed.map((ch) => ({
+            ...ch,
+            profitTargetPct: ch.type === 'instant' ? 0 : ch.profitTargetPct,
+            pointPrice: getChallengePointPrice(ch),
+          }));
         }
       }
       return INITIAL_CHALLENGES;
@@ -1064,6 +1162,25 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   });
 
+  const normalizeAdminCouponRecord = (c: AdminCouponRecord): AdminCouponRecord => {
+    const cleanCode = (c.code || '').toUpperCase();
+    if (cleanCode === '5K30OFF' && !c.targetChallengeId) {
+      return {
+        ...c,
+        targetChallengeId: 'two-step-5000',
+        targetChallengeTitle: '$5,000 Two Step Challenge',
+        singleEvaluationOnly: c.singleEvaluationOnly ?? true,
+      };
+    }
+    const targetId = c.targetChallengeId || 'ALL';
+    return {
+      ...c,
+      targetChallengeId: targetId,
+      targetChallengeTitle: formatCouponTargetLabel(targetId, c.targetChallengeTitle),
+      singleEvaluationOnly: Boolean(c.singleEvaluationOnly),
+    };
+  };
+
   const [adminCoupons, setAdminCoupons] = useState<AdminCouponRecord[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.ADMIN_COUPONS);
@@ -1071,7 +1188,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const parsed: AdminCouponRecord[] = JSON.parse(saved);
       const existingCodes = new Set(parsed.map((c) => c.code.toUpperCase()));
       const missingDefaults = INITIAL_ADMIN_COUPONS.filter((c) => !existingCodes.has(c.code.toUpperCase()));
-      return [...parsed, ...missingDefaults];
+      return [...parsed, ...missingDefaults].map(normalizeAdminCouponRecord);
     } catch {
       return INITIAL_ADMIN_COUPONS;
     }
@@ -1459,10 +1576,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Persistent Server Disk Vault Sync (Protects all user profiles, passwords, accounts, orders & purchases across Web updates)
   const vaultLoadedRef = useRef(false);
+  const deletedPayoutIdsRef = useRef<Set<string>>(new Set());
+  const deletedCouponIdsRef = useRef<Set<string>>(new Set());
+  const lastVaultSyncSigRef = useRef<string>('');
 
   const refreshVaultData = useCallback(async () => {
     try {
-      const res = await fetch('/api/vault/sync');
+      const res = await fetchWithTimeout('/api/vault/sync', undefined, 2500);
       if (!res.ok) {
         vaultLoadedRef.current = true;
         return;
@@ -1473,6 +1593,16 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return;
       }
       const v = data.vault;
+      if (Array.isArray(v.deletedPayoutIds)) {
+        v.deletedPayoutIds.forEach((id: unknown) => {
+          if (id) deletedPayoutIdsRef.current.add(String(id));
+        });
+      }
+      if (Array.isArray(v.deletedCouponIds)) {
+        v.deletedCouponIds.forEach((id: unknown) => {
+          if (id) deletedCouponIdsRef.current.add(String(id));
+        });
+      }
       if (Array.isArray(v.users) && v.users.length > 0) {
         let mergedUsersSnapshot: UserProfileData[] = [];
         setAllUsers((prev) => {
@@ -1593,14 +1723,14 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return next;
         });
       }
-      if (Array.isArray(v.payouts) && v.payouts.length > 0) {
+      if (Array.isArray(v.payouts)) {
         setPayouts((prev) => {
           const byId = new Map<string, PayoutRecordItem>();
           prev.forEach((p) => {
-            if (p?.id) byId.set(p.id, p);
+            if (p?.id && !deletedPayoutIdsRef.current.has(p.id)) byId.set(p.id, p);
           });
           v.payouts.forEach((p: PayoutRecordItem) => {
-            if (p?.id) {
+            if (p?.id && !deletedPayoutIdsRef.current.has(p.id)) {
               const existing = byId.get(p.id);
               const existingReviewed = existing?.reviewedAt ? Date.parse(existing.reviewedAt) || 0 : 0;
               const incomingReviewed = p.reviewedAt ? Date.parse(p.reviewedAt) || 0 : 0;
@@ -1632,6 +1762,43 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const next = Array.from(byId.values()).sort((a, b) =>
             (b.sentAt || '').localeCompare(a.sentAt || '')
           );
+          if (next.length === prev.length && JSON.stringify(next) === JSON.stringify(prev)) {
+            return prev;
+          }
+          return next;
+        });
+      }
+      if (Array.isArray(v.adminCoupons) && v.adminCoupons.length > 0) {
+        setAdminCoupons((prev) => {
+          const byId = new Map<string, AdminCouponRecord>();
+          v.adminCoupons.forEach((c: AdminCouponRecord) => {
+            if (c?.id && !deletedCouponIdsRef.current.has(c.id)) {
+              byId.set(c.id, normalizeAdminCouponRecord(c));
+            }
+          });
+          prev.forEach((c) => {
+            if (c?.id && !deletedCouponIdsRef.current.has(c.id)) {
+              const fromVault = byId.get(c.id);
+              byId.set(c.id, normalizeAdminCouponRecord(fromVault ? { ...fromVault, ...c } : c));
+            }
+          });
+          const next = Array.from(byId.values());
+          if (next.length === prev.length && JSON.stringify(next) === JSON.stringify(prev)) {
+            return prev;
+          }
+          return next;
+        });
+      }
+      if (Array.isArray(v.coupons) && v.coupons.length > 0) {
+        setCoupons((prev) => {
+          const byId = new Map<string, WonSpinCoupon>();
+          v.coupons.forEach((c: WonSpinCoupon) => {
+            if (c?.id) byId.set(c.id, c);
+          });
+          prev.forEach((c) => {
+            if (c?.id) byId.set(c.id, { ...byId.get(c.id), ...c });
+          });
+          const next = Array.from(byId.values());
           if (next.length === prev.length && JSON.stringify(next) === JSON.stringify(prev)) {
             return prev;
           }
@@ -1715,10 +1882,10 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setPayouts((prev) => {
           const byId = new Map<string, PayoutRecordItem>();
           prev.forEach((p) => {
-            if (p?.id) byId.set(p.id, p);
+            if (p?.id && !deletedPayoutIdsRef.current.has(p.id)) byId.set(p.id, p);
           });
           mergedCloudPayouts.forEach((p) => {
-            if (p?.id) {
+            if (p?.id && !deletedPayoutIdsRef.current.has(p.id)) {
               const existing = byId.get(p.id);
               const existingReviewed = existing?.reviewedAt ? Date.parse(existing.reviewedAt) || 0 : 0;
               const incomingReviewed = p.reviewedAt ? Date.parse(p.reviewedAt) || 0 : 0;
@@ -1750,7 +1917,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (routeRef.current === 'admin' || routeRef.current === 'dashboard') {
         void refreshVaultData();
       }
-    }, 15000);
+    }, route === 'admin' ? 5000 : 12000);
     const onFocus = () => {
       void refreshVaultData();
     };
@@ -1779,13 +1946,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const incoming: PayoutRecordItem[] = [];
           snapshot.forEach((d) => {
             const item = d.data() as PayoutRecordItem;
-            if (item?.id) incoming.push(item);
+            if (item?.id && !deletedPayoutIdsRef.current.has(item.id)) incoming.push(item);
           });
           if (incoming.length === 0) return;
           setPayouts((prev) => {
             const byId = new Map<string, PayoutRecordItem>();
             prev.forEach((p) => {
-              if (p?.id) byId.set(p.id, p);
+              if (p?.id && !deletedPayoutIdsRef.current.has(p.id)) byId.set(p.id, p);
             });
             incoming.forEach((p) => {
               const existing = byId.get(p.id);
@@ -1817,27 +1984,68 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       window.removeEventListener('focus', onFocus);
       if (unsubPayouts) unsubPayouts();
     };
-  }, [refreshVaultData, user?.uid, user?.role]);
+  }, [refreshVaultData, route, user?.uid, user?.role]);
 
   useEffect(() => {
     if (!vaultLoadedRef.current) return;
     const syncTimer = setTimeout(() => {
-      fetch('/api/vault/sync', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          users: allUsers,
-          accounts,
-          orders,
-          purchaseRequests,
-          coupons,
-          adminCoupons,
-          payouts,
-          paymentSettings,
-          emailNotifications,
-        }),
-      }).catch(() => {});
-    }, 450);
+      const cleanedPayouts = payouts.filter((p) => p?.id && !deletedPayoutIdsRef.current.has(p.id));
+      // Build a structural signature that ignores transient sub-second floating P&L / equity / currentPrice ticks
+      const structuralSig = JSON.stringify({
+        u: allUsers.map((u) => [
+          u.uid,
+          u.email,
+          u.role,
+          u.passwordHash,
+          u.passwordUpdatedAt,
+          u.rewardPoints,
+          u.pointsUpdatedAt,
+          u.referredBy,
+        ]),
+        a: accounts.map((a) => [a.id, a.balance, a.status, a.currentStep, a.terminalPassword, a.certificateImageUrl]),
+        o: orders.map((o) => [o.id, o.status, o.entryPrice, o.exitPrice, o.stopLoss, o.takeProfit, o.volume, o.closeTime]),
+        pr: purchaseRequests.map((r) => [r.id, r.status, r.reviewedAt]),
+        c: coupons.length,
+        ac: adminCoupons.map((c) => [
+          c.id,
+          c.code,
+          c.active,
+          c.discountPct,
+          c.targetChallengeId,
+          c.singleEvaluationOnly,
+          c.description,
+        ]),
+        dc: Array.from(deletedCouponIdsRef.current),
+        p: cleanedPayouts.map((p) => [p.id, p.status, p.reviewedAt, p.adminReason]),
+        dp: Array.from(deletedPayoutIdsRef.current),
+        ps: paymentSettings,
+        em: emailNotifications.length,
+      });
+      if (structuralSig === lastVaultSyncSigRef.current) return;
+      lastVaultSyncSigRef.current = structuralSig;
+      const payloadObj = {
+        users: allUsers,
+        accounts,
+        orders,
+        purchaseRequests,
+        coupons,
+        adminCoupons,
+        deletedCouponIds: Array.from(deletedCouponIdsRef.current),
+        payouts: cleanedPayouts,
+        deletedPayoutIds: Array.from(deletedPayoutIdsRef.current),
+        paymentSettings,
+        emailNotifications,
+      };
+      fetchWithTimeout(
+        '/api/vault/sync',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payloadObj),
+        },
+        3000
+      ).catch(() => {});
+    }, 1500);
     return () => clearTimeout(syncTimer);
   }, [allUsers, accounts, orders, purchaseRequests, coupons, adminCoupons, payouts, paymentSettings, emailNotifications]);
 
@@ -2043,9 +2251,15 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return userAccounts.find((a) => a.id === activeAccountId) || userAccounts[0] || null;
   }, [userAccounts, activeAccountId]);
 
-  // Keep refs to current route and active orders so high-frequency tick loops never re-render static website pages during 120Hz scroll
+  // Keep refs to current route, checkout modal, and active orders so high-frequency tick loops never re-render static website pages or modals
   const routeRef = React.useRef<PageRoute>(route);
   const hasActiveOrdersRef = React.useRef<boolean>(false);
+  const isCheckoutModalOpenRef = React.useRef<boolean>(Boolean(stripeCheckoutSession));
+  const lastFloatingSyncTsRef = React.useRef<number>(0);
+
+  useEffect(() => {
+    isCheckoutModalOpenRef.current = Boolean(stripeCheckoutSession);
+  }, [stripeCheckoutSession]);
 
   useEffect(() => {
     hasActiveOrdersRef.current = orders.some(
@@ -2055,7 +2269,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => {
     routeRef.current = route;
-    if (route === 'terminal') {
+    if (route === 'terminal' || route === 'dashboard') {
       setQuotes({ ...quotesRef.current });
     }
   }, [route]);
@@ -2254,13 +2468,16 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Real-Time Live Market Price Engine (Binance WebSocket + REST 24hr Ticker + Global FX Spot)
   const refreshLiveQuotes = useCallback(async () => {
     try {
-      const { quotes: fetchedQuotes, source } = await fetchInitialLiveQuotes(quotes);
+      const { quotes: fetchedQuotes, source } = await fetchInitialLiveQuotes(quotesRef.current);
       if (Object.keys(fetchedQuotes).length > 0) {
+        const nowTs = Date.now();
         setQuotes((prev) => {
           const next = { ...prev };
           (Object.keys(fetchedQuotes) as SymbolCode[]).forEach((sym) => {
             if (fetchedQuotes[sym]) {
-              next[sym] = fetchedQuotes[sym]!;
+              const updated = { ...fetchedQuotes[sym]!, timestamp: nowTs };
+              next[sym] = updated;
+              quotesRef.current[sym] = updated;
             }
           });
           return next;
@@ -2268,29 +2485,65 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setLiveFeedStatus((prev) => ({
           connected: true,
           source,
-          lastUpdateTs: Date.now(),
+          lastUpdateTs: nowTs,
           tickCount: prev.tickCount + 1,
         }));
       }
     } catch {
       // keep existing live quotes
     }
-  }, [quotes]);
+  }, []);
+
+  const syncSymbolLiveQuote = useCallback((sym: SymbolCode, rawBid: number, rawAsk?: number) => {
+    const spec = INSTRUMENTS[sym];
+    if (!spec || !Number.isFinite(rawBid) || rawBid <= 0) return;
+    const bid = roundPrice(rawBid, sym);
+    const ask = roundPrice(
+      rawAsk && Number.isFinite(rawAsk) && rawAsk > bid
+        ? Math.min(rawAsk, bid + spec.spread * 1.5)
+        : bid + spec.spread,
+      sym
+    );
+    const nowTs = Date.now();
+    const currRef = quotesRef.current[sym];
+    if (currRef && Math.abs(currRef.bid - bid) < Math.pow(10, -spec.decimals) * 0.5) {
+      return;
+    }
+    const nextQuote: MarketQuote = {
+      symbol: sym,
+      bid,
+      ask,
+      last: roundPrice((bid + ask) / 2, sym),
+      change24hPct: currRef?.change24hPct ?? 0.25,
+      high24h: roundPrice(Math.max(bid, currRef?.high24h || bid), sym),
+      low24h: roundPrice(currRef?.low24h && currRef.low24h > 0 ? Math.min(bid, currRef.low24h) : bid, sym),
+      timestamp: nowTs,
+    };
+    quotesRef.current[sym] = nextQuote;
+    setQuotes((prev) => ({
+      ...prev,
+      [sym]: nextQuote,
+    }));
+  }, []);
 
   useEffect(() => {
     let active = true;
     const spotAnchors: Partial<Record<SymbolCode, number>> = {};
     const lastWsTickTs: Partial<Record<SymbolCode, number>> = {};
+    let wsFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
     fetchInitialLiveQuotes(generateInitialQuotes()).then(({ quotes: initialLive, source }) => {
       if (!active) return;
       if (Object.keys(initialLive).length > 0) {
+        const nowTs = Date.now();
         setQuotes((prev) => {
           const next = { ...prev };
           (Object.keys(initialLive) as SymbolCode[]).forEach((sym) => {
             if (initialLive[sym]) {
-              next[sym] = initialLive[sym]!;
-              spotAnchors[sym] = initialLive[sym]!.bid;
+              const updated = { ...initialLive[sym]!, timestamp: nowTs };
+              next[sym] = updated;
+              quotesRef.current[sym] = updated;
+              spotAnchors[sym] = updated.bid;
             }
           });
           return next;
@@ -2298,7 +2551,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setLiveFeedStatus((prev) => ({
           connected: true,
           source,
-          lastUpdateTs: Date.now(),
+          lastUpdateTs: nowTs,
           tickCount: prev.tickCount + 1,
         }));
       }
@@ -2307,10 +2560,46 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let lastWsFlushTs = 0;
     const pendingWsUpdates: Partial<Record<SymbolCode, Partial<MarketQuote>>> = {};
 
+    const flushPendingQuotesToState = () => {
+      if (!active) return;
+      const keys = Object.keys(pendingWsUpdates) as SymbolCode[];
+      if (keys.length === 0) return;
+      const flushTs = Date.now();
+      lastWsFlushTs = flushTs;
+      setQuotes((prev) => {
+        const next = { ...prev };
+        keys.forEach((sym) => {
+          const upd = pendingWsUpdates[sym];
+          const curr = prev[sym];
+          if (!curr || !upd) return;
+          const incomingBid = upd.bid ?? curr.bid;
+          const mergedQuote: MarketQuote = {
+            ...curr,
+            ...upd,
+            high24h: Math.max(curr.high24h, incomingBid, upd.high24h || incomingBid),
+            low24h:
+              curr.low24h > 0
+                ? Math.min(curr.low24h, incomingBid, upd.low24h || incomingBid)
+                : incomingBid,
+            timestamp: flushTs,
+          };
+          next[sym] = mergedQuote;
+          quotesRef.current[sym] = mergedQuote;
+          delete pendingWsUpdates[sym];
+        });
+        return next;
+      });
+    };
+
     const unsubscribeWs = subscribeLiveMarketStream(
       (tickUpdate) => {
         if (!active) return;
         const nowTs = Date.now();
+        const isOpenMarket = getMarketStatus(tickUpdate.symbol).isOpen;
+        const hasInitialSpotAnchor = Boolean(spotAnchors[tickUpdate.symbol]);
+        if (!isOpenMarket && hasInitialSpotAnchor) {
+          return;
+        }
         lastWsTickTs[tickUpdate.symbol] = nowTs;
         if (tickUpdate.bid && tickUpdate.bid > 0) {
           spotAnchors[tickUpdate.symbol] = tickUpdate.bid;
@@ -2333,41 +2622,36 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         }
 
-        // Only flush React state when on 'terminal' (320ms), when open/pending orders exist (1500ms), or on initial snapshot (lastWsFlushTs === 0)
-        // This guarantees 0 background React re-renders while scrolling website pages at 120Hz!
+        // Only flush React state when on 'terminal' (280ms), 'dashboard' (1800ms), or on initial spot anchor — never re-render while checkout modal or public challenge models are being clicked
+        if (isCheckoutModalOpenRef.current) {
+          return;
+        }
         const isTerminalRoute = routeRef.current === 'terminal';
+        const isDashboardRoute = routeRef.current === 'dashboard';
         const shouldFlushReactState =
-          isTerminalRoute || hasActiveOrdersRef.current || lastWsFlushTs === 0;
+          isTerminalRoute ||
+          (isDashboardRoute && hasActiveOrdersRef.current) ||
+          lastWsFlushTs === 0 ||
+          !hasInitialSpotAnchor;
         if (!shouldFlushReactState) {
           return;
         }
-        const flushIntervalMs = isTerminalRoute ? 320 : 1500;
-        if (lastWsFlushTs > 0 && nowTs - lastWsFlushTs < flushIntervalMs) {
+        const flushIntervalMs = isTerminalRoute ? 280 : 1800;
+        const elapsed = nowTs - lastWsFlushTs;
+        if (lastWsFlushTs > 0 && elapsed < flushIntervalMs && hasInitialSpotAnchor) {
+          if (!wsFlushTimer) {
+            wsFlushTimer = setTimeout(() => {
+              wsFlushTimer = null;
+              flushPendingQuotesToState();
+            }, Math.max(40, flushIntervalMs - elapsed));
+          }
           return;
         }
-        lastWsFlushTs = nowTs;
-
-        setQuotes((prev) => {
-          const next = { ...prev };
-          (Object.keys(pendingWsUpdates) as SymbolCode[]).forEach((sym) => {
-            const upd = pendingWsUpdates[sym];
-            const curr = prev[sym];
-            if (!curr || !upd) return;
-            const incomingBid = upd.bid ?? curr.bid;
-            next[sym] = {
-              ...curr,
-              ...upd,
-              high24h: Math.max(curr.high24h, incomingBid, upd.high24h || incomingBid),
-              low24h:
-                curr.low24h > 0
-                  ? Math.min(curr.low24h, incomingBid, upd.low24h || incomingBid)
-                  : incomingBid,
-              timestamp: nowTs,
-            };
-            delete pendingWsUpdates[sym];
-          });
-          return next;
-        });
+        if (wsFlushTimer) {
+          clearTimeout(wsFlushTimer);
+          wsFlushTimer = null;
+        }
+        flushPendingQuotesToState();
       },
       (connected, source) => {
         if (!active || routeRef.current !== 'terminal') return;
@@ -2393,13 +2677,16 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
               const existing = prev[sym];
               if (incoming) {
                 spotAnchors[sym] = incoming.bid;
-                // If direct exchange WebSocket ticked within the last 3.5 seconds, keep WS price authoritative so PnL never snaps back
-                const recentWs = lastWsTickTs[sym] && nowTs - lastWsTickTs[sym]! < 3500;
-                if (recentWs && existing && isDirectExchangeSymbol(sym)) {
+                // If live tick stream updated within the last 4 seconds, preserve live ticking bid/ask so price never snaps back
+                const recentWs = lastWsTickTs[sym] && nowTs - lastWsTickTs[sym]! < 4000;
+                if (recentWs && existing) {
                   next[sym] = {
                     ...existing,
-                    high24h: incoming.high24h || existing.high24h,
-                    low24h: incoming.low24h || existing.low24h,
+                    high24h: Math.max(existing.high24h, incoming.high24h || existing.high24h),
+                    low24h:
+                      existing.low24h > 0
+                        ? Math.min(existing.low24h, incoming.low24h || existing.low24h)
+                        : incoming.low24h,
                     change24hPct: incoming.change24hPct ?? existing.change24hPct,
                   };
                 } else {
@@ -2407,6 +2694,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                     ...incoming,
                     timestamp: nowTs,
                   };
+                  quotesRef.current[sym] = next[sym];
                 }
               }
             });
@@ -2420,73 +2708,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           }));
         }
       });
-    }, 12000);
-
-    let tickRafId: number | null = null;
-    const microTickInterval = setInterval(() => {
-      // Only run high-frequency micro-ticks when viewing the live trading terminal so website pages scroll at 120fps with zero background re-renders
-      if (routeRef.current !== 'terminal') {
-        return;
-      }
-
-      if (tickRafId !== null) cancelAnimationFrame(tickRafId);
-      tickRafId = requestAnimationFrame(() => {
-        const nowMs = Date.now();
-
-        setQuotes((prevQuotes) => {
-          const nextQuotes = { ...prevQuotes };
-
-          (Object.keys(INSTRUMENTS) as SymbolCode[]).forEach((sym, idx) => {
-            const spec = INSTRUMENTS[sym];
-            const curr = prevQuotes[sym];
-            if (!curr) return;
-
-            // If real WebSocket stream or spot BBO is actively ticking this instrument, keep real feed authoritative
-            const wsAge = lastWsTickTs[sym] ? nowMs - lastWsTickTs[sym]! : Infinity;
-            const freshThreshold = sym === 'XAUUSD' ? 1800 : 2500;
-            if (isDirectExchangeSymbol(sym) && wsAge < freshThreshold) {
-              return;
-            }
-
-            // Tightly mean-revert around the verified live spot anchor so price never drifts away from live market
-            const anchor = spotAnchors[sym] ?? curr.bid;
-            const minPip = Math.pow(10, -spec.decimals);
-            const stepUnit = sym === 'XAUUSD' ? 0.08 : Math.max(minPip, spec.spread * 0.35);
-            const driftFromAnchor = curr.bid - anchor;
-            const maxAllowedExcursion = sym === 'XAUUSD' ? 0.45 : Math.max(spec.spread * 2.0, minPip * 6);
-            const reversionPull =
-              Math.abs(driftFromAnchor) > maxAllowedExcursion
-                ? -driftFromAnchor * 0.55
-                : -driftFromAnchor * 0.25;
-            const waveBias = Math.sin(nowMs / 2200 + idx * 1.3) * 0.1 * stepUnit;
-            const jitter = (Math.random() - 0.5) * stepUnit * 1.2 + waveBias + reversionPull;
-            const sign = jitter >= 0 ? 1 : -1;
-            const microDelta = sign * Math.max(minPip, Math.min(spec.spread * 0.65, Math.abs(jitter)));
-            const nextBid = roundPrice(Math.max(spec.spread * 2, curr.bid + microDelta), sym);
-            const nextAsk = roundPrice(nextBid + spec.spread, sym);
-
-            nextQuotes[sym] = {
-              ...curr,
-              bid: nextBid,
-              ask: nextAsk,
-              last: roundPrice((nextBid + nextAsk) / 2, sym),
-              high24h: Math.max(curr.high24h, nextBid),
-              low24h: curr.low24h > 0 ? Math.min(curr.low24h, nextBid) : nextBid,
-              timestamp: nowMs,
-            };
-          });
-
-          return nextQuotes;
-        });
-      });
-    }, 360);
+    }, 10000);
 
     return () => {
       active = false;
+      if (wsFlushTimer) clearTimeout(wsFlushTimer);
       unsubscribeWs();
       clearInterval(restSyncTimer);
-      clearInterval(microTickInterval);
-      if (tickRafId !== null) cancelAnimationFrame(tickRafId);
     };
   }, []);
 
@@ -2521,6 +2749,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
       const quote = quotes[order.symbol];
       if (!quote) return order;
+      if (!getMarketStatus(order.symbol).isOpen) return order;
 
       const trigger = evaluateOrderTrigger(order, quote);
       if (trigger.action === 'ACTIVATE_PENDING') {
@@ -2589,7 +2818,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       if (order.status === 'OPEN') {
         const snapshot = calculateOrderPnlSnapshot(order, quote);
-        if (!snapshot.isStatic && snapshot.currentPrice !== order.currentPrice) {
+        const nowMs = Date.now();
+        const allowFloatingStateSync =
+          (routeRef.current === 'terminal' || routeRef.current === 'dashboard') &&
+          nowMs - lastFloatingSyncTsRef.current >= 900 &&
+          Math.abs((snapshot.netPnl || 0) - (order.netPnl || 0)) >= 0.25;
+        if (!snapshot.isStatic && snapshot.currentPrice !== order.currentPrice && allowFloatingStateSync) {
           hasOrderUpdates = true;
           return {
             ...order,
@@ -2605,6 +2839,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
 
     if (hasOrderUpdates || hasAnyOpenOrder) {
+      if (hasOrderUpdates) {
+        lastFloatingSyncTsRef.current = Date.now();
+      }
       const newlyBreachedIds = new Set<string>();
       const breachDetails: { id: string; accountNumber: string; reason: string; floatingLoss: number }[] = [];
       let didMutateAccounts = false;
@@ -2702,13 +2939,15 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const currentDailyStart = needsDailyReset ? metrics.equity : metrics.dailyStartingEquity;
 
         const nextEquity = isBreachedNow ? settledBreachBalance : metrics.equity;
+        const equityDiffSignificant =
+          hasOrderUpdates && Math.abs((acc.equity || 0) - nextEquity) >= 0.5;
         if (
           acc.balance !== settledBreachBalance ||
-          acc.equity !== nextEquity ||
+          equityDiffSignificant ||
           acc.status !== nextStatus ||
           acc.currentStep !== nextCurrentStep ||
           acc.phaseStartingBalance !== nextPhaseStartBal ||
-          acc.peakEquity !== metrics.peakEquity
+          Math.abs((acc.peakEquity || 0) - metrics.peakEquity) >= 1
         ) {
           didMutateAccounts = true;
         }
@@ -2923,9 +3162,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return;
       }
       setRoute(targetPage);
+      if (targetPage === 'admin' || targetPage === 'dashboard') {
+        void refreshVaultData();
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     },
-    [user, pushNotification]
+    [user, pushNotification, refreshVaultData]
   );
 
   const recordAdminLog = useCallback(
@@ -3103,7 +3345,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // Hydrate latest vault users so we never miss an existing registered account
         let directoryUsers = allUsers;
         try {
-          const syncRes = await fetch('/api/vault/sync');
+          const syncRes = await fetchWithTimeout('/api/vault/sync', undefined, 2500);
           if (syncRes.ok) {
             const syncJson = await syncRes.json();
             if (Array.isArray(syncJson?.vault?.users)) {
@@ -3139,13 +3381,21 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         let fbUid = '';
         try {
-          const cred = await createUserWithEmailAndPassword(auth, cleanEmail, input.password);
+          const cred = await withTimeout(
+            createUserWithEmailAndPassword(auth, cleanEmail, input.password),
+            2500,
+            'FirebaseRegister'
+          );
           fbUid = cred.user.uid;
         } catch (fbErr) {
           const msg = fbErr instanceof Error ? fbErr.message : String(fbErr);
           if (msg.includes('email-already-in-use')) {
             try {
-              const signInCred = await signInWithEmailAndPassword(auth, cleanEmail, input.password);
+              const signInCred = await withTimeout(
+                signInWithEmailAndPassword(auth, cleanEmail, input.password),
+                2500,
+                'FirebaseRegisterFallbackLogin'
+              );
               fbUid = signInCred.user.uid;
             } catch {
               // If local account was linked via Google/GitHub or seed without custom password, allow seamless linking
@@ -3166,6 +3416,25 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         const passwordHash = hashPasswordVerifier(cleanEmail, input.password);
 
+        let storedRefCode = '';
+        try {
+          storedRefCode = sessionStorage.getItem('apex_pending_referral_code') || '';
+        } catch {}
+        const rawRefInput = (input.referralCode?.trim() || storedRefCode.trim()).toUpperCase();
+        const alreadyHadReferrer = Boolean(existingLocal?.referredBy);
+        const matchedReferrer =
+          rawRefInput && !alreadyHadReferrer
+            ? directoryUsers.find(
+                (u) =>
+                  u.email.toLowerCase() !== cleanEmail &&
+                  (u.referralCode || '').trim().toUpperCase() === rawRefInput
+              )
+            : undefined;
+
+        const resolvedReferredBy =
+          existingLocal?.referredBy ||
+          (matchedReferrer ? matchedReferrer.referralCode : rawRefInput || undefined);
+
         const newProfile: UserProfileData = mergeUserProfileRecords(existingLocal, {
           uid,
           fullName: input.fullName.trim(),
@@ -3174,9 +3443,10 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           referralCode:
             existingLocal?.referralCode ||
             `APEX-${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
-          referredBy: input.referralCode?.trim() || existingLocal?.referredBy || undefined,
+          referredBy: resolvedReferredBy,
           role: isBootstrapSuperAdmin ? 'super_admin' : existingLocal?.role || 'user',
           rewardPoints: existingLocal?.rewardPoints || 0,
+          pointsUpdatedAt: existingLocal?.pointsUpdatedAt || Date.now(),
           mfaEnabled: existingLocal?.mfaEnabled || false,
           deletionRequested: false,
           passwordHash,
@@ -3186,14 +3456,62 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           createdAt: existingLocal?.createdAt || new Date().toISOString(),
         });
 
+        try {
+          sessionStorage.removeItem('apex_pending_referral_code');
+        } catch {}
+
+        const usersToPersist: UserProfileData[] = [newProfile];
+        if (matchedReferrer && !alreadyHadReferrer) {
+          const updatedReferrer: UserProfileData = {
+            ...matchedReferrer,
+            rewardPoints: Math.max(0, Number(matchedReferrer.rewardPoints || 0)) + AFFILIATE_POINTS_PER_REFERRAL,
+            pointsUpdatedAt: Date.now() + 1,
+          };
+          usersToPersist.push(updatedReferrer);
+          void safeFirestoreWrite('users', updatedReferrer.uid, {
+            uid: updatedReferrer.uid,
+            fullName: updatedReferrer.fullName.slice(0, 100),
+            email: updatedReferrer.email.slice(0, 150),
+            country: (updatedReferrer.country || 'India').slice(0, 80),
+            referralCode: updatedReferrer.referralCode.slice(0, 32),
+            referredBy: updatedReferrer.referredBy,
+            role: updatedReferrer.role,
+            rewardPoints: updatedReferrer.rewardPoints,
+            pointsUpdatedAt: updatedReferrer.pointsUpdatedAt,
+            mfaEnabled: Boolean(updatedReferrer.mfaEnabled),
+            deletionRequested: Boolean(updatedReferrer.deletionRequested),
+            createdAt: updatedReferrer.createdAt,
+          });
+          void safeFirestoreWrite(
+            'users',
+            deterministicUserDocId(updatedReferrer.email),
+            {
+              uid: updatedReferrer.uid,
+              fullName: updatedReferrer.fullName.slice(0, 100),
+              email: updatedReferrer.email.slice(0, 150),
+              country: (updatedReferrer.country || 'India').slice(0, 80),
+              referralCode: updatedReferrer.referralCode.slice(0, 32),
+              referredBy: updatedReferrer.referredBy,
+              role: updatedReferrer.role,
+              rewardPoints: updatedReferrer.rewardPoints,
+              pointsUpdatedAt: updatedReferrer.pointsUpdatedAt,
+              mfaEnabled: Boolean(updatedReferrer.mfaEnabled),
+              deletionRequested: Boolean(updatedReferrer.deletionRequested),
+              createdAt: updatedReferrer.createdAt,
+            }
+          );
+        }
+
         const firestoreUserPayload = {
           uid: newProfile.uid,
           fullName: newProfile.fullName.slice(0, 100),
           email: newProfile.email.slice(0, 150),
           country: newProfile.country.slice(0, 80),
           referralCode: newProfile.referralCode.slice(0, 32),
+          referredBy: newProfile.referredBy,
           role: 'user',
           rewardPoints: newProfile.rewardPoints,
+          pointsUpdatedAt: newProfile.pointsUpdatedAt,
           mfaEnabled: false,
           deletionRequested: false,
           passwordHash: newProfile.passwordHash,
@@ -3204,15 +3522,19 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         void safeFirestoreWrite('users', uid, firestoreUserPayload);
         void safeFirestoreWrite('users', deterministicUserDocId(cleanEmail), firestoreUserPayload);
 
-        setAllUsers((prev) => mergeUserDirectories(prev, [newProfile]));
+        setAllUsers((prev) => mergeUserDirectories(prev, usersToPersist));
         setUser(newProfile);
 
-        // Immediately save new user profile & password hash to persistent disk vault
-        fetch('/api/vault/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ users: [newProfile] }),
-        }).catch(() => {});
+        // Immediately save new user profile (& credited referrer if any) to persistent disk vault
+        fetchWithTimeout(
+          '/api/vault/save',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ users: usersToPersist }),
+          },
+          2500
+        ).catch(() => {});
 
         // Dispatch branded FUNDED APEX Welcome Registration Email + Starter Promo Offer Email
         dispatchFundedApexEmail(
@@ -3270,7 +3592,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         let directoryUsers = allUsers;
         let vaultServerReachable = false;
         try {
-          const syncRes = await fetch('/api/vault/sync');
+          const syncRes = await fetchWithTimeout('/api/vault/sync', undefined, 2500);
           if (syncRes.ok) {
             vaultServerReachable = true;
             const syncJson = await syncRes.json();
@@ -3306,11 +3628,19 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         let fbUid = '';
         if ((localVerify.ok || canBindPasswordToExisting) && existingProfile) {
           try {
-            const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+            const cred = await withTimeout(
+              signInWithEmailAndPassword(auth, cleanEmail, password),
+              2500,
+              'FirebaseLogin'
+            );
             fbUid = cred.user.uid;
           } catch {
             try {
-              const createdCred = await createUserWithEmailAndPassword(auth, cleanEmail, password);
+              const createdCred = await withTimeout(
+                createUserWithEmailAndPassword(auth, cleanEmail, password),
+                2500,
+                'FirebaseSyncCreate'
+              );
               fbUid = createdCred.user.uid;
             } catch {
               // Keep authenticated via verified local/vault credential
@@ -3319,7 +3649,11 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } else {
           // Verify with Firebase Auth (handles existing Firebase users or passwords updated via Firebase link)
           try {
-            const cred = await signInWithEmailAndPassword(auth, cleanEmail, password);
+            const cred = await withTimeout(
+              signInWithEmailAndPassword(auth, cleanEmail, password),
+              2500,
+              'FirebaseLogin'
+            );
             fbUid = cred.user.uid;
           } catch {
             // If a returning trader signs in with their email & password across deployments/browsers and isn't in local storage yet,
@@ -3380,11 +3714,15 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         // Persist synced profile safely on vault disk and Firestore
-        fetch('/api/vault/save', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ users: [updatedProfile] }),
-        }).catch(() => {});
+        fetchWithTimeout(
+          '/api/vault/save',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ users: [updatedProfile] }),
+          },
+          2500
+        ).catch(() => {});
 
         void safeFirestoreWrite('users', deterministicUserDocId(cleanEmail), {
           uid: updatedProfile.uid,
@@ -3667,7 +4005,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const cleanEmail = email.trim().toLowerCase();
       if (!cleanEmail) throw new Error('Please enter your registered email address.');
       try {
-        await sendPasswordResetEmail(auth, cleanEmail);
+        await withTimeout(sendPasswordResetEmail(auth, cleanEmail), 2500, 'PasswordReset');
       } catch {}
       const matchedUser = allUsers.find((u) => u.email.toLowerCase() === cleanEmail);
       const resetToken = `APEX-RST-${Math.floor(100000 + Math.random() * 900000)}`;
@@ -3816,6 +4154,221 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     [user, challenges, createInitialEvaluationForUser, pushNotification]
   );
 
+  const purchaseEvaluationWithPoints = useCallback(
+    (challengeId: string): { ok: boolean; account?: TradingAccountRecord; message: string } => {
+      if (!user) {
+        setRoute('login');
+        return {
+          ok: false,
+          message: 'Please sign in first to redeem your Affiliate Points for an evaluation account.',
+        };
+      }
+      const template =
+        challenges.find((c) => c.id === challengeId) ||
+        INITIAL_CHALLENGES.find((c) => c.id === challengeId);
+      if (!template) {
+        return {
+          ok: false,
+          message: 'Selected evaluation program was not found.',
+        };
+      }
+      const pointCost = getChallengePointPrice(template);
+      const currentPoints = Math.max(0, Number(user.rewardPoints || 0));
+      if (currentPoints < pointCost) {
+        const neededPts = pointCost - currentPoints;
+        const neededRefs = Math.ceil(neededPts / AFFILIATE_POINTS_PER_REFERRAL);
+        const msg = `Insufficient Affiliate Points: You have ${currentPoints} PTS, but ${template.title} requires ${pointCost} PTS (${neededPts} more PTS / ${neededRefs} more referral${neededRefs === 1 ? '' : 's'} at ${AFFILIATE_POINTS_PER_REFERRAL} PTS per referral).`;
+        pushNotification('Insufficient Affiliate Points', msg, 'warning');
+        return {
+          ok: false,
+          message: msg,
+        };
+      }
+
+      const nextPoints = Math.max(0, currentPoints - pointCost);
+      const nowTs = Date.now();
+      const updatedUser: UserProfileData = {
+        ...user,
+        rewardPoints: nextPoints,
+        pointsUpdatedAt: nowTs,
+      };
+
+      const newAcc = createInitialEvaluationForUser(updatedUser, template);
+      setUser(updatedUser);
+      setAllUsers((prev) => mergeUserDirectories(prev, [updatedUser]));
+      setStripeCheckoutSession(null);
+
+      void safeFirestoreWrite('users', updatedUser.uid, {
+        uid: updatedUser.uid,
+        fullName: updatedUser.fullName.slice(0, 100),
+        email: updatedUser.email.slice(0, 150),
+        country: (updatedUser.country || 'India').slice(0, 80),
+        referralCode: updatedUser.referralCode.slice(0, 32),
+        referredBy: updatedUser.referredBy,
+        role: updatedUser.role,
+        rewardPoints: updatedUser.rewardPoints,
+        pointsUpdatedAt: updatedUser.pointsUpdatedAt,
+        mfaEnabled: Boolean(updatedUser.mfaEnabled),
+        deletionRequested: Boolean(updatedUser.deletionRequested),
+        createdAt: updatedUser.createdAt,
+      });
+      void safeFirestoreWrite('trading_accounts', newAcc.id, newAcc);
+      void safeFirestoreWrite('accounts', newAcc.id, newAcc);
+
+      fetch('/api/vault/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          users: [updatedUser],
+          accounts: [newAcc],
+        }),
+      }).catch(() => {});
+
+      recordAdminLog(
+        'AFFILIATE_POINTS_REDEMPTION',
+        newAcc.id,
+        `Trader ${updatedUser.email} redeemed ${pointCost} Affiliate Points for ${template.title} -> Activated Account #${newAcc.accountNumber} (Remaining: ${nextPoints} PTS)`
+      );
+
+      const successMsg = `Redeemed ${pointCost} Affiliate Points! Activated Account #${newAcc.accountNumber} (${template.title}). Terminal ID: ${newAcc.terminalUserId} | Pass: ${newAcc.terminalPassword}`;
+      pushNotification('Evaluation Purchased with Affiliate Points ✓', successMsg, 'success');
+      return {
+        ok: true,
+        account: newAcc,
+        message: successMsg,
+      };
+    },
+    [
+      user,
+      challenges,
+      createInitialEvaluationForUser,
+      safeFirestoreWrite,
+      recordAdminLog,
+      pushNotification,
+    ]
+  );
+
+  const applyReferralCode = useCallback(
+    (referralCodeInput: string): { ok: boolean; message: string } => {
+      if (!user) {
+        setRoute('login');
+        return {
+          ok: false,
+          message: 'Please sign in first to link a partner referral code.',
+        };
+      }
+      const cleanCode = referralCodeInput.trim().toUpperCase();
+      if (!cleanCode) {
+        return {
+          ok: false,
+          message: 'Please enter a valid Partner Referral Code.',
+        };
+      }
+      if (user.referredBy) {
+        return {
+          ok: false,
+          message: `Your account is already linked to partner referral code ${user.referredBy}.`,
+        };
+      }
+      if ((user.referralCode || '').trim().toUpperCase() === cleanCode) {
+        return {
+          ok: false,
+          message: 'You cannot apply your own referral code.',
+        };
+      }
+      const referrer = allUsers.find(
+        (u) =>
+          u.uid !== user.uid &&
+          u.email.toLowerCase() !== user.email.toLowerCase() &&
+          (u.referralCode || '').trim().toUpperCase() === cleanCode
+      );
+      if (!referrer) {
+        return {
+          ok: false,
+          message: `Referral code "${cleanCode}" was not found in the active partner directory.`,
+        };
+      }
+
+      const nowTs = Date.now();
+      const updatedUser: UserProfileData = {
+        ...user,
+        referredBy: referrer.referralCode,
+        pointsUpdatedAt: nowTs,
+      };
+      const updatedReferrer: UserProfileData = {
+        ...referrer,
+        rewardPoints: Math.max(0, Number(referrer.rewardPoints || 0)) + AFFILIATE_POINTS_PER_REFERRAL,
+        pointsUpdatedAt: nowTs + 1,
+      };
+
+      setUser(updatedUser);
+      setAllUsers((prev) => mergeUserDirectories(prev, [updatedUser, updatedReferrer]));
+
+      void safeFirestoreWrite('users', updatedUser.uid, updatedUser);
+      void safeFirestoreWrite('users', updatedReferrer.uid, updatedReferrer);
+
+      fetch('/api/vault/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ users: [updatedUser, updatedReferrer] }),
+      }).catch(() => {});
+
+      const msg = `Partner code ${referrer.referralCode} linked! ${referrer.fullName} earned +${AFFILIATE_POINTS_PER_REFERRAL} Affiliate Points.`;
+      pushNotification('Referral Code Linked ✓', msg, 'success');
+      return { ok: true, message: msg };
+    },
+    [user, allUsers, safeFirestoreWrite, pushNotification]
+  );
+
+  const adminAdjustUserPoints = useCallback(
+    (
+      targetUid: string,
+      pointsValue: number,
+      mode: 'add' | 'set' = 'add'
+    ): { ok: boolean; message: string } => {
+      if (!user || !['admin', 'super_admin'].includes(user.role)) {
+        return { ok: false, message: 'Unauthorized: Admin privileges required.' };
+      }
+      const targetUser = allUsers.find((u) => u.uid === targetUid);
+      if (!targetUser) {
+        return { ok: false, message: 'Target user not found.' };
+      }
+      const currentPts = Math.max(0, Number(targetUser.rewardPoints || 0));
+      const nextPts =
+        mode === 'set'
+          ? Math.max(0, Math.round(Number(pointsValue) || 0))
+          : Math.max(0, Math.round(currentPts + (Number(pointsValue) || 0)));
+
+      const updatedTarget: UserProfileData = {
+        ...targetUser,
+        rewardPoints: nextPts,
+        pointsUpdatedAt: Date.now(),
+      };
+
+      setAllUsers((prev) => mergeUserDirectories(prev, [updatedTarget]));
+      if (user.uid === targetUser.uid || user.email.toLowerCase() === targetUser.email.toLowerCase()) {
+        setUser(updatedTarget);
+      }
+
+      void safeFirestoreWrite('users', updatedTarget.uid, updatedTarget);
+      fetch('/api/vault/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ users: [updatedTarget] }),
+      }).catch(() => {});
+
+      recordAdminLog(
+        'ADMIN_ADJUST_AFFILIATE_POINTS',
+        updatedTarget.uid,
+        `Admin updated Affiliate Points for ${updatedTarget.email}: ${currentPts} PTS -> ${nextPts} PTS`
+      );
+      const msg = `Updated Affiliate Points for ${updatedTarget.fullName} (${updatedTarget.email}): ${nextPts} PTS`;
+      pushNotification('Affiliate Points Updated ✓', msg, 'success');
+      return { ok: true, message: msg };
+    },
+    [user, allUsers, safeFirestoreWrite, recordAdminLog, pushNotification]
+  );
+
   // Submit Account Purchase Request -> Supports Guest Checkout (capture email/name if not logged in)
   const submitAccountPurchaseRequest = useCallback(
     (params: {
@@ -3896,20 +4449,28 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       void safeFirestoreWrite('purchase_requests', newRequest.id, newRequest);
 
       // Instant server vault dispatch so orders are immediately captured across devices
-      fetch('/api/vault/purchase-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newRequest),
-      }).catch(() => {});
+      fetchWithTimeout(
+        '/api/vault/purchase-request',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newRequest),
+        },
+        3000
+      ).catch(() => {});
 
-      fetch('/api/vault/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          purchaseRequest: newRequest,
-          purchaseRequests: [newRequest],
-        }),
-      }).catch(() => {});
+      fetchWithTimeout(
+        '/api/vault/save',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            purchaseRequest: newRequest,
+            purchaseRequests: [newRequest],
+          }),
+        },
+        3000
+      ).catch(() => {});
 
       // Dispatch alert email to Admin operations desk
       const adminOrderEmail = buildCustomManualEmailPayload({
@@ -4002,6 +4563,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const submitOrder = useCallback(
     (input: OrderSubmissionInput) => {
+      const marketStatus = getMarketStatus(input.symbol);
+      if (!marketStatus.isOpen) {
+        pushNotification('Market Closed (Sat–Sun)', marketStatus.reason, 'warning');
+        return { ok: false, error: marketStatus.reason };
+      }
+
       let account = accounts.find((a) => a.id === input.accountId);
       if (!account && input.accountId.startsWith('preview-')) {
         const rawChallengeKey = input.accountId.replace('preview-', '');
@@ -4225,43 +4792,75 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   );
 
   const modifyOrder = useCallback(
-    (orderId: string, updates: { stopLoss: number; takeProfit: number; entryPrice?: number }) => {
+    (
+      orderId: string,
+      updates: { stopLoss: number; takeProfit: number; entryPrice?: number; allowAutoClamp?: boolean }
+    ) => {
       const target = orders.find((o) => o.id === orderId);
-      if (!target) return { ok: false, error: 'Order not found.' };
+      if (!target) {
+        pushNotification('Order Not Found', 'Selected trade order is no longer open.', 'error');
+        return { ok: false, error: 'Order not found.' };
+      }
+      const marketStatus = getMarketStatus(target.symbol);
+      if (!marketStatus.isOpen) {
+        pushNotification('Market Closed (Sat–Sun)', marketStatus.reason, 'warning');
+        return { ok: false, error: marketStatus.reason };
+      }
 
       const spec = INSTRUMENTS[target.symbol];
       const quote = quotesRef.current[target.symbol] || quotes[target.symbol];
-      const minPip = Math.pow(10, -(spec?.decimals || 2));
-      const minDist = Math.max(minPip * 2, (spec?.spread || minPip) * 0.5);
+      const nextEntry =
+        target.status === 'PENDING' &&
+        typeof updates.entryPrice === 'number' &&
+        Number.isFinite(updates.entryPrice) &&
+        updates.entryPrice > 0
+          ? roundPrice(updates.entryPrice, target.symbol)
+          : target.entryPrice;
 
-      let sl =
-        Number.isFinite(updates.stopLoss) && updates.stopLoss > 0
-          ? roundPrice(updates.stopLoss, target.symbol)
-          : 0;
-      let tp =
-        Number.isFinite(updates.takeProfit) && updates.takeProfit > 0
-          ? roundPrice(updates.takeProfit, target.symbol)
-          : 0;
-
-      // For OPEN positions, ensure SL & TP sit on the valid side of live market price by at least 2 pips so editing never glitches or self-closes immediately
-      if (target.status === 'OPEN' && quote) {
-        const markPrice = target.side === 'BUY' ? quote.bid : quote.ask;
-        if (target.side === 'BUY') {
-          if (sl > 0 && sl >= markPrice - minDist) {
-            sl = roundPrice(markPrice - minDist, target.symbol);
-          }
-          if (tp > 0 && tp <= markPrice + minDist) {
-            tp = roundPrice(markPrice + minDist, target.symbol);
-          }
-        } else {
-          if (sl > 0 && sl <= markPrice + minDist) {
-            sl = roundPrice(markPrice + minDist, target.symbol);
-          }
-          if (tp > 0 && tp >= markPrice - minDist) {
-            tp = roundPrice(markPrice - minDist, target.symbol);
-          }
+      if (target.status === 'PENDING' && quote) {
+        if (target.orderType === 'BUY_LIMIT' && nextEntry >= quote.ask) {
+          const err = `Buy Limit entry (${nextEntry}) must stay below Ask (${quote.ask}).`;
+          pushNotification('Pending Entry Invalid', err, 'error');
+          return { ok: false, error: err };
+        }
+        if (target.orderType === 'SELL_LIMIT' && nextEntry <= quote.bid) {
+          const err = `Sell Limit entry (${nextEntry}) must stay above Bid (${quote.bid}).`;
+          pushNotification('Pending Entry Invalid', err, 'error');
+          return { ok: false, error: err };
+        }
+        if (target.orderType === 'BUY_STOP' && nextEntry <= quote.ask) {
+          const err = `Buy Stop entry (${nextEntry}) must stay above Ask (${quote.ask}).`;
+          pushNotification('Pending Entry Invalid', err, 'error');
+          return { ok: false, error: err };
+        }
+        if (target.orderType === 'SELL_STOP' && nextEntry >= quote.bid) {
+          const err = `Sell Stop entry (${nextEntry}) must stay below Bid (${quote.bid}).`;
+          pushNotification('Pending Entry Invalid', err, 'error');
+          return { ok: false, error: err };
         }
       }
+
+      const preview = validateAndComputeSlTpPreview({
+        symbol: target.symbol,
+        side: target.side,
+        volume: target.volume,
+        referencePrice: nextEntry,
+        liveBid: quote?.bid,
+        liveAsk: quote?.ask,
+        stopLoss: updates.stopLoss,
+        takeProfit: updates.takeProfit,
+        isOpenPosition: target.status === 'OPEN',
+        allowAutoClamp: Boolean(updates.allowAutoClamp),
+      });
+
+      if (!preview.valid) {
+        const errMsg = preview.error || 'Invalid Stop Loss or Take Profit level.';
+        pushNotification('SL / TP Validation Error', errMsg, 'error');
+        return { ok: false, error: errMsg };
+      }
+
+      const sl = preview.stopLoss;
+      const tp = preview.takeProfit;
 
       setOrders((prev) =>
         prev.map((o) =>
@@ -4270,21 +4869,21 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
                 ...o,
                 stopLoss: sl,
                 takeProfit: tp,
-                entryPrice:
-                  o.status === 'PENDING' && updates.entryPrice
-                    ? roundPrice(updates.entryPrice, o.symbol)
-                    : o.entryPrice,
+                entryPrice: nextEntry,
               }
             : o
         )
       );
 
       if (typeof window !== 'undefined') {
+        const dec = spec?.decimals || 2;
+        const slLabel = sl > 0 ? `${sl.toFixed(dec)} (-$${preview.riskUsd.toFixed(0)})` : 'OFF';
+        const tpLabel = tp > 0 ? `${tp.toFixed(dec)} (+$${preview.rewardUsd.toFixed(0)})` : 'OFF';
         window.dispatchEvent(
           new CustomEvent('apex-terminal-banner', {
             detail: {
               title: 'SL / TP PROTECTION UPDATED',
-              subtitle: `${target.symbol} ${target.side} · SL: ${sl > 0 ? sl : 'OFF'} · TP: ${tp > 0 ? tp : 'OFF'}`,
+              subtitle: `${target.symbol} ${target.side} · SL: ${slLabel} · TP: ${tpLabel}${preview.rrRatio ? ` · 1:${preview.rrRatio}` : ''}`,
               tone: 'emerald',
             },
           })
@@ -4293,13 +4892,19 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       return { ok: true };
     },
-    [orders, quotes]
+    [orders, quotes, pushNotification]
   );
 
   const closePosition = useCallback(
     (orderId: string, partialRatio = 1) => {
       const target = orders.find((o) => o.id === orderId && o.status === 'OPEN');
       if (!target) return { ok: false, error: 'Open position not found.' };
+
+      const marketStatus = getMarketStatus(target.symbol);
+      if (!marketStatus.isOpen) {
+        pushNotification('Market Closed (Sat–Sun)', marketStatus.reason, 'warning');
+        return { ok: false, error: marketStatus.reason };
+      }
 
       const quote = quotesRef.current[target.symbol] || quotes[target.symbol];
       const fillPrice = target.side === 'BUY' ? quote.bid : quote.ask;
@@ -4603,37 +5208,26 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         freeMargin: syncedBalance,
       };
 
-      const eligibility = evaluateAccountPayoutEligibility(account, openForAcc, closedForAcc);
-      if (!eligibility.eligible) {
+      const validation = validatePayoutRequestAgainstRules({
+        account,
+        amountUsd: input.amountUsd,
+        method: input.method,
+        destination: input.destination,
+        openOrders: openForAcc,
+        closedOrders: closedForAcc,
+        existingPayouts: payouts,
+      });
+
+      if (!validation.valid) {
         return {
           ok: false,
-          error: eligibility.reason,
-          eligibility,
+          error: validation.error || validation.eligibility.reason,
+          eligibility: validation.eligibility,
         };
       }
 
+      const eligibility = validation.eligibility;
       const requestedUsd = Math.round(Number(input.amountUsd) * 100) / 100;
-      if (!Number.isFinite(requestedUsd) || requestedUsd < 20) {
-        return {
-          ok: false,
-          error: 'Minimum payout withdrawal amount is $20.00 USD.',
-          eligibility,
-        };
-      }
-      if (requestedUsd > eligibility.maxWithdrawableUsd) {
-        return {
-          ok: false,
-          error: `Requested amount ($${requestedUsd.toFixed(2)}) exceeds your ${eligibility.profitSplitPct}% profit split limit ($${eligibility.maxWithdrawableUsd.toFixed(2)}).`,
-          eligibility,
-        };
-      }
-      if (!input.destination.trim()) {
-        return {
-          ok: false,
-          error: 'Please enter your receiving wallet address or bank wire details.',
-          eligibility,
-        };
-      }
 
       const grossProfitDeducted =
         Math.round((requestedUsd / (eligibility.profitSplitPct / 100)) * 100) / 100;
@@ -4675,23 +5269,32 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         createdAt: new Date().toISOString(),
       };
 
+      deletedPayoutIdsRef.current.delete(newPayout.id);
       setPayouts((prev) => [newPayout, ...prev]);
 
       // Immediately sync payout request and updated account to server vault & Firestore so Admin Panel updates in real time
-      fetch('/api/vault/payout-request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newPayout),
-      }).catch(() => {});
+      fetchWithTimeout(
+        '/api/vault/payout-request',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newPayout),
+        },
+        3000
+      ).catch(() => {});
 
-      fetch('/api/vault/save', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          payouts: [newPayout],
-          accounts: [updatedAccount],
-        }),
-      }).catch(() => {});
+      fetchWithTimeout(
+        '/api/vault/save',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            payouts: [newPayout],
+            accounts: [updatedAccount],
+          }),
+        },
+        3000
+      ).catch(() => {});
 
       void safeFirestoreWrite('payouts', newPayout.id, newPayout);
       void safeFirestoreWrite('trading_accounts', updatedAccount.id, updatedAccount);
@@ -4963,6 +5566,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return { ok: false, error: 'Payout record not found.' };
       }
 
+      deletedPayoutIdsRef.current.add(payoutId);
       setPayouts((prev) => prev.filter((p) => p.id !== payoutId));
       if (auth.currentUser) {
         void deleteDoc(doc(db, 'payouts', payoutId)).catch(() => {});
@@ -5071,16 +5675,32 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         };
       }
 
+      const matchedAdm = adminCoupons.find(
+        (c) => c.code.toUpperCase() === normalized && c.active
+      );
+      const preferredChallengeId =
+        matchedAdm?.targetChallengeId &&
+        matchedAdm.targetChallengeId !== 'ALL' &&
+        !matchedAdm.targetChallengeId.startsWith('TYPE:') &&
+        !matchedAdm.targetChallengeId.startsWith('SIZE:')
+          ? matchedAdm.targetChallengeId
+          : fallbackChallengeId;
+
       const targetTemplate =
-        challenges.find((c) => c.id === fallbackChallengeId) ||
-        INITIAL_CHALLENGES.find((c) => c.id === fallbackChallengeId) ||
+        challenges.find((c) => c.id === preferredChallengeId) ||
+        INITIAL_CHALLENGES.find((c) => c.id === preferredChallengeId) ||
         INITIAL_CHALLENGES[0];
+
+      const usedCodesByCurrentUser = userPurchaseRequests
+        .filter((r) => r.status !== 'rejected' && r.couponCode)
+        .map((r) => String(r.couponCode));
 
       const breakdown = computeStripeCheckoutBreakdown(
         targetTemplate,
         normalized,
         userCoupons,
-        adminCoupons
+        adminCoupons,
+        usedCodesByCurrentUser
       );
       if (!breakdown.validCode) {
         pushNotification('Invalid Coupon Code', breakdown.errorMessage || 'Code not recognized.', 'error');
@@ -5097,7 +5717,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         message: `${breakdown.discountPct}% OFF coupon (${normalized}) applied in Checkout.`,
       };
     },
-    [user, challenges, userCoupons, adminCoupons, openStripeCheckout, pushNotification]
+    [user, challenges, userCoupons, adminCoupons, userPurchaseRequests, openStripeCheckout, pushNotification]
   );
 
   const adminSaveChallenge = useCallback(
@@ -5534,6 +6154,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         setAccounts((prev) => [createdAccount!, ...prev]);
         void safeFirestoreWrite('trading_accounts', createdAccount.id, createdAccount);
+        void safeFirestoreWrite('accounts', createdAccount.id, createdAccount);
+        fetch('/api/vault/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ accounts: [createdAccount] }),
+        }).catch(() => {});
 
         dispatchTerminalCredentialsEmail({
           recipientEmail: cleanEmail,
@@ -5629,6 +6255,12 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       setAccounts((prev) => [allocatedAcc, ...prev]);
       void safeFirestoreWrite('trading_accounts', allocatedAcc.id, allocatedAcc);
+      void safeFirestoreWrite('accounts', allocatedAcc.id, allocatedAcc);
+      fetch('/api/vault/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accounts: [allocatedAcc] }),
+      }).catch(() => {});
 
       dispatchTerminalCredentialsEmail({
         recipientEmail: targetUser.email,
@@ -5743,7 +6375,14 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Admin Coupon Code Creator & Manager
   const adminCreateCoupon = useCallback(
-    (input: { code: string; discountPct: number; description: string }) => {
+    (input: {
+      code: string;
+      discountPct: number;
+      description: string;
+      targetChallengeId?: string;
+      targetChallengeTitle?: string;
+      singleEvaluationOnly?: boolean;
+    }) => {
       if (!user || !['admin', 'super_admin'].includes(user.role)) {
         return { ok: false, error: 'Unauthorized: Admin role required.' };
       }
@@ -5755,15 +6394,38 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return { ok: false, error: `Coupon code ${cleanCode} already exists.` };
       }
       const pct = Math.min(100, Math.max(1, Math.round(input.discountPct)));
+      const targetId = (input.targetChallengeId || 'ALL').trim() || 'ALL';
+      const targetTitle = formatCouponTargetLabel(targetId, input.targetChallengeTitle);
+      const singleOnly = Boolean(input.singleEvaluationOnly);
+
       const newCoupon: AdminCouponRecord = {
         id: `adm-cpn-${Date.now()}`,
         code: cleanCode,
         discountPct: pct,
-        description: input.description.trim() || `${pct}% OFF Evaluation Coupon`,
+        description:
+          input.description.trim() ||
+          `${pct}% OFF ${targetId === 'ALL' ? 'Evaluation Coupon' : `Only on ${targetTitle}`}`,
         active: true,
+        targetChallengeId: targetId,
+        targetChallengeTitle: targetTitle,
+        singleEvaluationOnly: singleOnly,
         createdAt: new Date().toISOString(),
       };
-      setAdminCoupons((prev) => [newCoupon, ...prev]);
+      setAdminCoupons((prev) => {
+        const next = [newCoupon, ...prev];
+        fetch('/api/vault/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adminCoupons: next, replaceAdminCoupons: true }),
+        }).catch(() => {});
+        return next;
+      });
+      void safeFirestoreWrite('adminCoupons', newCoupon.id, newCoupon);
+
+      const emailChallengeId =
+        targetId !== 'ALL' && !targetId.startsWith('TYPE:') && !targetId.startsWith('SIZE:')
+          ? targetId
+          : 'two-step-5000';
       dispatchFundedApexEmail(
         buildPromotionalOfferEmailPayload({
           recipientEmail: 'all@fundedapex.com',
@@ -5771,15 +6433,84 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           offerTitle: newCoupon.description,
           discountPct: pct,
           promoCode: cleanCode,
-          challengeId: 'two-step-5000',
-          challengeTitle: '$5K – $200K Evaluation Programs',
+          challengeId: emailChallengeId,
+          challengeTitle: targetId === 'ALL' ? '$5K – $200K Evaluation Programs' : targetTitle,
         })
       );
-      recordAdminLog('CREATE_COUPON', newCoupon.id, `Created coupon ${cleanCode} (${pct}% OFF) and broadcast promotional email`);
-      pushNotification('Coupon Created & Promo Email Broadcast ✓', `Coupon ${cleanCode} (${pct}% OFF) is now live and emailed to traders.`, 'success');
+      recordAdminLog(
+        'CREATE_COUPON',
+        newCoupon.id,
+        `Created coupon ${cleanCode} (${pct}% OFF · Target: ${targetTitle}${singleOnly ? ' · 1 Eval Limit' : ''})`
+      );
+      pushNotification(
+        'Coupon Created & Saved ✓',
+        `Coupon ${cleanCode} (${pct}% OFF · ${targetTitle}) is now live.`,
+        'success'
+      );
       return { ok: true, coupon: newCoupon };
     },
-    [user, adminCoupons, dispatchFundedApexEmail, recordAdminLog, pushNotification]
+    [user, adminCoupons, safeFirestoreWrite, dispatchFundedApexEmail, recordAdminLog, pushNotification]
+  );
+
+  const adminUpdateCoupon = useCallback(
+    (
+      couponId: string,
+      updates: Partial<
+        Pick<
+          AdminCouponRecord,
+          | 'targetChallengeId'
+          | 'targetChallengeTitle'
+          | 'singleEvaluationOnly'
+          | 'discountPct'
+          | 'description'
+          | 'active'
+        >
+      >
+    ) => {
+      if (!user || !['admin', 'super_admin'].includes(user.role)) return;
+      let updatedRecord: AdminCouponRecord | null = null;
+      setAdminCoupons((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== couponId) return c;
+          const nextTargetId =
+            updates.targetChallengeId !== undefined
+              ? updates.targetChallengeId || 'ALL'
+              : c.targetChallengeId || 'ALL';
+          const nextTargetTitle = formatCouponTargetLabel(
+            nextTargetId,
+            updates.targetChallengeTitle !== undefined ? updates.targetChallengeTitle : undefined
+          );
+          updatedRecord = {
+            ...c,
+            ...updates,
+            targetChallengeId: nextTargetId,
+            targetChallengeTitle: nextTargetTitle,
+          };
+          return updatedRecord;
+        });
+        fetch('/api/vault/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adminCoupons: next, replaceAdminCoupons: true }),
+        }).catch(() => {});
+        return next;
+      });
+      if (updatedRecord) {
+        const rec = updatedRecord as AdminCouponRecord;
+        void safeFirestoreWrite('adminCoupons', rec.id, rec);
+        recordAdminLog(
+          'UPDATE_COUPON',
+          rec.id,
+          `Updated coupon ${rec.code} -> Target: ${rec.targetChallengeTitle || 'All Evaluations'}${rec.singleEvaluationOnly ? ' (1 Eval Limit)' : ''}`
+        );
+        pushNotification(
+          'Coupon Target Scope Saved ✓',
+          `${rec.code} now applies to: ${rec.targetChallengeTitle || 'All Evaluations'}.`,
+          'success'
+        );
+      }
+    },
+    [user, safeFirestoreWrite, recordAdminLog, pushNotification]
   );
 
   const adminBroadcastPromotionalEmail = useCallback(
@@ -5963,18 +6694,49 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const adminToggleCoupon = useCallback(
     (couponId: string) => {
       if (!user || !['admin', 'super_admin'].includes(user.role)) return;
-      setAdminCoupons((prev) =>
-        prev.map((c) => (c.id === couponId ? { ...c, active: !c.active } : c))
-      );
+      let toggledRecord: AdminCouponRecord | null = null;
+      setAdminCoupons((prev) => {
+        const next = prev.map((c) => {
+          if (c.id !== couponId) return c;
+          toggledRecord = { ...c, active: !c.active };
+          return toggledRecord;
+        });
+        fetch('/api/vault/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ adminCoupons: next, replaceAdminCoupons: true }),
+        }).catch(() => {});
+        return next;
+      });
+      if (toggledRecord) {
+        const rec = toggledRecord as AdminCouponRecord;
+        void safeFirestoreWrite('adminCoupons', rec.id, rec);
+      }
       pushNotification('Coupon Updated', 'Toggled coupon active status.', 'info');
     },
-    [user, pushNotification]
+    [user, safeFirestoreWrite, pushNotification]
   );
 
   const adminDeleteCoupon = useCallback(
     (couponId: string) => {
       if (!user || !['admin', 'super_admin'].includes(user.role)) return;
-      setAdminCoupons((prev) => prev.filter((c) => c.id !== couponId));
+      deletedCouponIdsRef.current.add(couponId);
+      setAdminCoupons((prev) => {
+        const next = prev.filter((c) => c.id !== couponId);
+        fetch('/api/vault/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            adminCoupons: next,
+            deletedCouponIds: Array.from(deletedCouponIdsRef.current),
+            replaceAdminCoupons: true,
+          }),
+        }).catch(() => {});
+        return next;
+      });
+      try {
+        void deleteDoc(doc(db, 'adminCoupons', couponId)).catch(() => {});
+      } catch {}
       pushNotification('Coupon Deleted', 'Removed coupon code from system.', 'info');
     },
     [user, pushNotification]
@@ -6259,6 +7021,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         quotes,
         liveFeedStatus,
         refreshLiveQuotes,
+        syncSymbolLiveQuote,
         refreshVaultData,
         challenges,
         accounts: userAccounts,
@@ -6306,6 +7069,9 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         submitAccountPurchaseRequest,
         completeStripeCheckoutPayment,
         startChallengeEvaluation,
+        purchaseEvaluationWithPoints,
+        applyReferralCode,
+        adminAdjustUserPoints,
         redeemSpinCodeOrAddAccount,
         submitOrder,
         modifyOrder,
@@ -6331,6 +7097,7 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         adminResetUserPassword,
         adminDeleteUser,
         adminCreateCoupon,
+        adminUpdateCoupon,
         adminToggleCoupon,
         adminDeleteCoupon,
         adminSavePaymentSettings,

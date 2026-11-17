@@ -4,9 +4,16 @@ import {
   evaluateAccountRiskMetrics,
   evaluateAccountPayoutEligibility,
   resolveChallengeRulesForAccount,
+  formatAccountRulesSummary,
   ChallengeType,
 } from '../engine/tradingEngine';
-import { COUNTRIES, ACCOUNT_SIZES } from '../data/platformData';
+import {
+  COUNTRIES,
+  ACCOUNT_SIZES,
+  AFFILIATE_POINTS_PER_REFERRAL,
+  TWO_STEP_5K_POINT_PRICE,
+  getChallengePointPrice,
+} from '../data/platformData';
 import { FundedApexLogo } from './FundedApexLogo';
 import {
   ArrowUpRight,
@@ -23,6 +30,7 @@ import {
   Grid,
   History,
   HelpCircle,
+  Lock,
   LogOut,
   Menu,
   RefreshCw,
@@ -54,6 +62,7 @@ export type DashboardTabType =
 export const DashboardView: React.FC = () => {
   const {
     user,
+    allUsers,
     navigate,
     accounts,
     activeAccount,
@@ -65,9 +74,10 @@ export const DashboardView: React.FC = () => {
     userPayoutRequests,
     verifiedPayouts,
     paymentSettings,
-    userCoupons,
     logout,
     openStripeCheckout,
+    purchaseEvaluationWithPoints,
+    applyReferralCode,
     updateUserProfile,
     changeUserPassword,
     requestAccountPayout,
@@ -76,6 +86,15 @@ export const DashboardView: React.FC = () => {
   } = usePlatform();
 
   const [activeTab, setActiveTab] = useState<DashboardTabType>('overview');
+  const [affiliateEvalType, setAffiliateEvalType] = useState<ChallengeType>('two_step');
+  const [dashPartnerCodeInput, setDashPartnerCodeInput] = useState('');
+  const [dashAffiliateNotice, setDashAffiliateNotice] = useState<{
+    ok: boolean;
+    message: string;
+    accountNumber?: string;
+    terminalUserId?: string;
+    terminalPassword?: string;
+  } | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [showNotificationsPopover, setShowNotificationsPopover] = useState(false);
@@ -166,14 +185,26 @@ export const DashboardView: React.FC = () => {
     };
   }, [activeAccount, closedOrders, payouts]);
 
+  const activeAccountWithdrawnGross = useMemo(() => {
+    if (!activeAccount) return 0;
+    const rules = resolveChallengeRulesForAccount(activeAccount);
+    return payouts
+      .filter((p) => p.accountId === activeAccount.id && p.status !== 'Rejected')
+      .reduce(
+        (s, p) => s + (p.grossProfitDeducted || p.amountUsd / ((rules.profitSplitPct || 80) / 100)),
+        0
+      );
+  }, [activeAccount, payouts]);
+
   const activeAccountPayoutEligibility = useMemo(() => {
     if (!reconciledActiveAccount) return null;
     return evaluateAccountPayoutEligibility(
       reconciledActiveAccount,
       activeAccOrders,
-      closedOrders
+      closedOrders,
+      { withdrawnGrossProfitUsd: activeAccountWithdrawnGross }
     );
-  }, [reconciledActiveAccount, activeAccOrders, closedOrders]);
+  }, [reconciledActiveAccount, activeAccOrders, closedOrders, activeAccountWithdrawnGross]);
 
   const totalProfit = useMemo(
     () =>
@@ -279,14 +310,24 @@ export const DashboardView: React.FC = () => {
 
   const payoutEligibility = useMemo(() => {
     if (!selectedPayoutAccount) return null;
+    const accRules = resolveChallengeRulesForAccount(selectedPayoutAccount);
     const openForAcc = userOrders.filter(
       (o) => o.accountId === selectedPayoutAccount.id && o.status === 'OPEN'
     );
     const closedForAcc = userOrders.filter(
       (o) => o.accountId === selectedPayoutAccount.id && o.status === 'CLOSED'
     );
-    return evaluateAccountPayoutEligibility(selectedPayoutAccount, openForAcc, closedForAcc);
-  }, [selectedPayoutAccount, userOrders]);
+    const withdrawnGrossProfitUsd = payouts
+      .filter((p) => p.accountId === selectedPayoutAccount.id && p.status !== 'Rejected')
+      .reduce(
+        (s, p) =>
+          s + (p.grossProfitDeducted || p.amountUsd / ((accRules.profitSplitPct || 80) / 100)),
+        0
+      );
+    return evaluateAccountPayoutEligibility(selectedPayoutAccount, openForAcc, closedForAcc, {
+      withdrawnGrossProfitUsd,
+    });
+  }, [selectedPayoutAccount, userOrders, payouts]);
 
   const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -389,7 +430,7 @@ export const DashboardView: React.FC = () => {
     { id: 'dashboard', label: 'Performance', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'payouts', label: 'Payouts', icon: <Wallet className="w-4 h-4" /> },
     { id: 'certificates', label: 'Certificates', icon: <Award className="w-4 h-4" /> },
-    { id: 'affiliate', label: 'Rewards', icon: <Gift className="w-4 h-4" /> },
+    { id: 'affiliate', label: 'Affiliate', icon: <Users className="w-4 h-4" /> },
     { id: 'kyc', label: 'Support & KYC', icon: <HelpCircle className="w-4 h-4" /> },
     { id: 'settings', label: 'Settings', icon: <Settings className="w-4 h-4" /> },
   ];
@@ -405,13 +446,13 @@ export const DashboardView: React.FC = () => {
         <div
           aria-hidden="true"
           onClick={() => setIsDrawerOpen(false)}
-          className="fixed inset-0 z-50 bg-[#000000]/80 backdrop-blur-sm lg:hidden"
+          className="fixed inset-0 z-50 bg-[#000000]/80 apex-backdrop-enter lg:hidden"
         />
       )}
 
       {/* SIDEBAR DRAWER (1-SCREEN COMPACT FIT WITHOUT PROFILE BLOCK) */}
       <aside
-        className={`fixed lg:sticky lg:top-0 inset-y-0 left-0 z-50 w-64 h-[100dvh] max-h-[100dvh] shrink-0 bg-gradient-to-b from-[#061318]/98 via-[#040D11]/98 to-[#03090C]/98 backdrop-blur-xl border-r border-[#00E5B0]/25 px-3.5 py-3 flex flex-col justify-between overflow-hidden transition-transform duration-200 ease-out select-none shadow-[16px_0_48px_rgba(0,0,0,0.85)] ${
+        className={`fixed lg:sticky lg:top-0 inset-y-0 left-0 z-50 w-64 h-[100dvh] max-h-[100dvh] shrink-0 bg-gradient-to-b from-[#061318]/98 via-[#040D11]/98 to-[#03090C]/98 backdrop-blur-xl border-r border-[#00E5B0]/25 px-3.5 py-3 flex flex-col justify-between overflow-hidden transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] select-none shadow-[16px_0_48px_rgba(0,0,0,0.85)] ${
           isDrawerOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         }`}
       >
@@ -596,6 +637,23 @@ export const DashboardView: React.FC = () => {
               >
                 <Award className="w-3.5 h-3.5 text-[#00E5B0]" />
                 <span>Certificates</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="sidebar-affiliate-btn"
+                onClick={() => {
+                  setActiveTab('affiliate');
+                  setIsDrawerOpen(false);
+                }}
+                className={`w-full px-2.5 py-1.5 rounded-[10px] text-[12px] font-medium flex items-center gap-2.5 transition-all cursor-pointer ${
+                  activeTab === 'affiliate'
+                    ? 'bg-[#0A2027] border border-[#00E5B0]/40 text-[#38F8D2] font-bold shadow-[inset_0_1px_0_rgba(56,248,210,0.15)]'
+                    : 'text-[#A3BDB8] hover:bg-[#08181E] hover:text-white'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5 text-[#00E5B0]" />
+                <span>Affiliate Program</span>
               </button>
 
               <button
@@ -911,7 +969,7 @@ export const DashboardView: React.FC = () => {
         </header>
 
         {/* DASHBOARD BODY */}
-        <main className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-5 sm:space-y-6">
+        <main key={activeTab} className="flex-1 max-w-[1440px] w-full mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-6 space-y-5 sm:space-y-6 apex-tab-enter">
           {/* =====================================================================
               1. OVERVIEW TAB (Video 2 Layout: Welcome Back, 4 Cards, Quick Actions + 8 KPIs & Terminal Details)
               ===================================================================== */}
@@ -1282,13 +1340,23 @@ export const DashboardView: React.FC = () => {
                       </button>
                       <button
                         type="button"
+                        data-testid="overview-request-payout-btn"
+                        disabled={!activeAccountPayoutEligibility?.eligible}
+                        title={
+                          activeAccountPayoutEligibility?.reason ||
+                          'Complete all predefined trading targets to unlock Request Payout'
+                        }
                         onClick={() => {
+                          if (!activeAccountPayoutEligibility?.eligible) return;
                           if (activeAccount) setSelectedPayoutAccountId(activeAccount.id);
                           setActiveTab('payouts');
                         }}
-                        className="px-4 py-2.5 rounded-[9px] apex-secondary-btn text-xs cursor-pointer"
+                        className="px-4 py-2.5 rounded-[9px] apex-secondary-btn text-xs cursor-pointer inline-flex items-center gap-1.5 disabled:opacity-45 disabled:cursor-not-allowed"
                       >
-                        Request Payout
+                        {!activeAccountPayoutEligibility?.eligible && (
+                          <Lock className="w-3.5 h-3.5 text-amber-300" />
+                        )}
+                        <span>Request Payout</span>
                       </button>
                       <button
                         type="button"
@@ -1513,16 +1581,29 @@ export const DashboardView: React.FC = () => {
                       );
                       const accRealizedNet = accClosed.reduce((s, o) => s + (o.netPnl || 0), 0);
                       const accWithdrawnGross = payouts
-                        .filter((p) => p.accountId === acc.id)
-                        .reduce((s, p) => s + p.amountUsd / ((accRules.profitSplitPct || 80) / 100), 0);
+                        .filter((p) => p.accountId === acc.id && p.status !== 'Rejected')
+                        .reduce(
+                          (s, p) =>
+                            s +
+                            (p.grossProfitDeducted || p.amountUsd / ((accRules.profitSplitPct || 80) / 100)),
+                          0
+                        );
                       const syncedAccBalance =
                         acc.status === 'failed'
                           ? Math.round(acc.balance * 100) / 100
                           : Math.round((acc.startingBalance + accRealizedNet - accWithdrawnGross) * 100) / 100;
+                      const accSynced = { ...acc, balance: syncedAccBalance };
                       const accMetrics = evaluateAccountRiskMetrics(
-                        { ...acc, balance: syncedAccBalance },
+                        accSynced,
                         accOpen
                       );
+                      const accEligibility = evaluateAccountPayoutEligibility(
+                        accSynced,
+                        accOpen,
+                        accClosed,
+                        { withdrawnGrossProfitUsd: accWithdrawnGross }
+                      );
+                      const accSummary = formatAccountRulesSummary(accSynced);
                       const evalPnl = Math.round((accMetrics.equity - acc.startingBalance) * 100) / 100;
 
                       return (
@@ -1594,6 +1675,24 @@ export const DashboardView: React.FC = () => {
                                 {evalPnl >= 0 ? '+' : '-'}${Math.abs(evalPnl).toFixed(2)}
                               </span>
                             </div>
+                            <div className="flex justify-between pt-1 border-t border-white/5">
+                              <span className="text-[#A7B1AA] font-sans">Daily / Max DD</span>
+                              <span className="font-bold text-white tabular-nums">
+                                {accSummary.dailyDrawdownPct}% / {accSummary.maxDrawdownPct}% (Used {accMetrics.maxDrawdownUsedPct.toFixed(1)}%)
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#A7B1AA] font-sans">Target Track</span>
+                              <span className="font-bold text-[#00E676] text-right truncate max-w-[165px]">
+                                {accSummary.phaseTargetsText}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-[#A7B1AA] font-sans">Rules &amp; Split</span>
+                              <span className="font-bold text-white">
+                                {accSummary.leverageText} · {accSummary.profitSplitPct}% Split
+                              </span>
+                            </div>
                           </div>
 
                           <div className="grid grid-cols-2 gap-2">
@@ -1610,14 +1709,21 @@ export const DashboardView: React.FC = () => {
                             </button>
                             <button
                               type="button"
+                              disabled={!accEligibility.eligible}
+                              title={accEligibility.reason}
                               onClick={() => {
+                                if (!accEligibility.eligible) return;
                                 setSelectedPayoutAccountId(acc.id);
                                 setActiveTab('payouts');
                               }}
-                              className="py-2.5 px-3 rounded-[9px] apex-secondary-btn text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                              className="py-2.5 px-3 rounded-[9px] apex-secondary-btn text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed"
                             >
-                              <Wallet className="w-3.5 h-3.5 text-[#00E676]" />
-                              <span>Payouts</span>
+                              {accEligibility.eligible ? (
+                                <Wallet className="w-3.5 h-3.5 text-[#00E676]" />
+                              ) : (
+                                <Lock className="w-3.5 h-3.5 text-amber-300" />
+                              )}
+                              <span>Request Payout</span>
                             </button>
                           </div>
                         </div>
@@ -1735,31 +1841,49 @@ export const DashboardView: React.FC = () => {
                             <span className="font-display font-bold text-[#00E676]">
                               {ch.type === 'instant' || ch.profitTargetPct === 0
                                 ? 'None (Instant Funded)'
-                                : `${ch.profitTargetPct}%`}
+                                : ch.type === 'two_step'
+                                ? `${ch.profitTargetPct}% Step 1 · ${ch.phase2TargetPct ?? 5}% Step 2`
+                                : ch.type === 'three_step'
+                                ? `${ch.profitTargetPct}% / ${ch.phase2TargetPct ?? 6}% / ${ch.phase3TargetPct ?? 6}%`
+                                : `${ch.profitTargetPct}% (Single Step)`}
                             </span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-[#A7B1AA]">Daily Drawdown</span>
-                            <span className="font-display font-bold text-white">{ch.dailyDrawdownPct}%</span>
+                            <span className="font-display font-bold text-white">
+                              {ch.dailyDrawdownPct}% (${((ch.accountSize * ch.dailyDrawdownPct) / 100).toLocaleString()})
+                            </span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-[#A7B1AA]">Max Drawdown</span>
-                            <span className="font-display font-bold text-white">{ch.maxDrawdownPct}%</span>
+                            <span className="text-[#A7B1AA]">Max Static Drawdown</span>
+                            <span className="font-display font-bold text-white">
+                              {ch.maxDrawdownPct}% (${((ch.accountSize * ch.maxDrawdownPct) / 100).toLocaleString()})
+                            </span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-[#A7B1AA]">Profit Split</span>
-                            <span className="font-display font-bold text-[#00E676]">Up to {ch.profitSplitPct}%</span>
+                            <span className="text-[#A7B1AA]">Min Trading Days</span>
+                            <span className="font-display font-bold text-white">
+                              {ch.type === 'instant' ? '0 Eval · 5 Payout Days' : `${ch.minTradingDays} Days · No Time Limit`}
+                            </span>
                           </div>
                           <div className="flex justify-between">
-                            <span className="text-[#A7B1AA]">Leverage</span>
-                            <span className="font-display font-bold text-white">1:{ch.leverage}</span>
+                            <span className="text-[#A7B1AA]">Consistency Rule</span>
+                            <span className="font-display font-bold text-white">
+                              {ch.type === 'instant' ? '15% Max Single Trade' : 'None (0%)'}
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-[#A7B1AA]">Profit Split &amp; Leverage</span>
+                            <span className="font-display font-bold text-[#00E676]">
+                              {ch.profitSplitPct}% · 1:{ch.leverage}
+                            </span>
                           </div>
                         </div>
                       </div>
 
                       <button
                         type="button"
-                        onClick={() => openStripeCheckout(ch.id, ch.accountSize === 5000 ? '5K30OFF' : undefined)}
+                        onClick={() => openStripeCheckout(ch.id, ch.id === 'two-step-5000' ? '5K30OFF' : undefined)}
                         className="w-full py-2.5 rounded-[9px] apex-glow-btn text-xs uppercase tracking-wider cursor-pointer mt-1"
                       >
                         Start Challenge — ${ch.priceUsd}
@@ -2046,8 +2170,8 @@ export const DashboardView: React.FC = () => {
               })()}
 
               {selectedCertificateModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#000000]/85 backdrop-blur-md">
-                  <div className="w-full max-w-2xl bg-[#050806] border border-[#00E676]/45 rounded-[16px] p-8 space-y-6 text-center shadow-2xl">
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#000000]/85 apex-backdrop-enter">
+                  <div className="w-full max-w-2xl bg-[#050806] border border-[#00E676]/45 rounded-[16px] p-8 space-y-6 text-center shadow-2xl apex-scale-in">
                     <div className="flex justify-between items-center">
                       <FundedApexLogo size="sm" />
                       <button
@@ -2398,6 +2522,37 @@ export const DashboardView: React.FC = () => {
                           </div>
                         </div>
 
+                        <div className="space-y-1.5 pt-1" data-testid="payout-rule-checks">
+                          <div className="text-[10px] font-mono uppercase tracking-wider text-[#77837B]">
+                            Predefined Passing Rules Verification
+                          </div>
+                          <div className="space-y-1">
+                            {payoutEligibility.ruleChecks.map((rule) => (
+                              <div
+                                key={rule.id}
+                                data-testid={`payout-rule-${rule.id}`}
+                                className={`flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 sm:gap-2 px-2.5 py-2 rounded-[7px] border text-[11px] font-mono ${
+                                  rule.passed
+                                    ? 'bg-[#00E676]/10 border-[#00E676]/30 text-[#00E676]'
+                                    : 'bg-amber-500/10 border-amber-500/25 text-amber-200'
+                                }`}
+                              >
+                                <div className="flex items-center gap-1.5 min-w-0">
+                                  {rule.passed ? (
+                                    <CheckCircle2 className="w-3.5 h-3.5 shrink-0 text-[#00E676]" />
+                                  ) : (
+                                    <Lock className="w-3 h-3 shrink-0 text-amber-300" />
+                                  )}
+                                  <span className="font-semibold">{rule.label}</span>
+                                </div>
+                                <span className="text-[10px] pl-5 sm:pl-0 sm:shrink-0 sm:text-right">
+                                  {rule.actualText} <span className="opacity-70">/ {rule.requiredText}</span>
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
                         <div className="text-xs text-[#A7B1AA]">{payoutEligibility.reason}</div>
                       </div>
                     )}
@@ -2465,12 +2620,22 @@ export const DashboardView: React.FC = () => {
 
                       <button
                         type="submit"
-                        disabled={!payoutEligibility?.eligible}
-                        className="w-full py-3 rounded-[9px] apex-glow-btn text-xs cursor-pointer disabled:opacity-40"
+                        data-testid="payout-submit-btn"
+                        disabled={
+                          !payoutEligibility?.eligible ||
+                          !Number.isFinite(payoutAmount) ||
+                          payoutAmount < 20 ||
+                          payoutAmount > (payoutEligibility?.maxWithdrawableUsd || 0) ||
+                          payoutWalletAddress.trim().length < 8
+                        }
+                        className="w-full py-3 rounded-[9px] apex-glow-btn text-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                       >
-                        {payoutEligibility?.eligible
-                          ? `Submit $${payoutAmount.toFixed(2)} USD Payout Request →`
-                          : 'Payout Locked — Complete Challenge Rules'}
+                        {!payoutEligibility?.eligible && <Lock className="w-3.5 h-3.5" />}
+                        <span>
+                          {payoutEligibility?.eligible
+                            ? `Request Payout — $${payoutAmount.toFixed(2)} USD →`
+                            : 'Request Payout (Rules Locked)'}
+                        </span>
                       </button>
                     </form>
                   </>
@@ -2597,56 +2762,285 @@ export const DashboardView: React.FC = () => {
           )}
 
           {/* =====================================================================
-              8. REWARDS & AFFILIATE TAB
+              8. REWARDS & AFFILIATE TAB (ACTIVE: 1 REFER = 10 PTS, $5K 2-STEP = 110 PTS)
               ===================================================================== */}
-          {activeTab === 'affiliate' && (
-            <section className="space-y-6 apex-fade-up">
-              <div className="bg-[#090D0A] border border-[#00E676]/15 rounded-[14px] p-6 sm:p-8 space-y-6">
-                <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-white/10 pb-6">
-                  <div className="space-y-1.5">
-                    <div className="inline-flex items-center gap-2 px-3 py-1 rounded-[7px] bg-[#0D130F] border border-[#00E676]/30 text-xs font-mono font-bold text-[#00E676]">
-                      <Gift className="w-3.5 h-3.5" />
-                      <span>TRADER REWARDS &amp; PARTNER PROGRAM</span>
+          {activeTab === 'affiliate' && (() => {
+            const userPts = Math.max(0, Number(user.rewardPoints || 0));
+            const referredTraders = allUsers.filter(
+              (u) =>
+                u.uid !== user.uid &&
+                (u.referredBy || '').trim().toUpperCase() === (user.referralCode || '').trim().toUpperCase()
+            );
+            const progress5k = Math.min(100, Math.round((userPts / TWO_STEP_5K_POINT_PRICE) * 100));
+            const neededFor5k = Math.max(0, TWO_STEP_5K_POINT_PRICE - userPts);
+            const refsNeededFor5k = Math.ceil(neededFor5k / AFFILIATE_POINTS_PER_REFERRAL);
+            const filteredAffiliateChallenges = challenges
+              .filter((c) => c.status === 'available' && c.type === affiliateEvalType);
+
+            return (
+              <section
+                data-testid="dashboard-affiliate-section"
+                className="apex-affiliate-simple-font space-y-6 font-sans text-[#E8ECE9] antialiased apex-fade-up"
+              >
+                <div className="bg-[#090D0A] border border-white/10 rounded-[14px] p-6 sm:p-8 space-y-6">
+                  <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 border-b border-white/10 pb-6">
+                    <div className="space-y-2">
+                      <div className="inline-flex items-center gap-2 px-3 py-1 rounded-[7px] bg-[#0D1410] border border-[#00E676]/25 text-xs font-medium text-[#00E676]">
+                        <Gift className="w-3.5 h-3.5" />
+                        <span>Active Affiliate Program · 1 Referral = {AFFILIATE_POINTS_PER_REFERRAL} Points</span>
+                      </div>
+                      <h2 className="text-xl sm:text-2xl font-semibold text-white tracking-tight">
+                        Affiliate Points &amp; Evaluation Store
+                      </h2>
+                      <p className="text-xs sm:text-sm text-[#9BA69E] max-w-xl leading-relaxed">
+                        Earn <span className="text-[#00E676] font-medium">+{AFFILIATE_POINTS_PER_REFERRAL} Points</span> for every trader you refer. Redeem{' '}
+                        <span className="text-white font-medium">{TWO_STEP_5K_POINT_PRICE} Points</span> (11 referrals) for a{' '}
+                        <span className="text-white font-medium">$5,000 Two Step Challenge</span> or unlock any of our 24 evaluations.
+                      </p>
                     </div>
-                    <h2 className="text-2xl font-display font-bold text-white">
-                      Rewards, Coupons &amp; 15% Partner Commissions
-                    </h2>
-                    <p className="text-xs text-[#A7B1AA] max-w-xl">
-                      Claim exclusive evaluation discount rewards or share your partner link to earn 15% commission on referrals.
-                    </p>
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className="px-4 py-2.5 rounded-[10px] bg-[#061318] border border-[#00E676]/30 text-xs font-semibold text-[#00E676] tabular-nums">
+                        Balance: {userPts} Points (1 Referral = {AFFILIATE_POINTS_PER_REFERRAL} Pts)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleCopyReferral}
+                        className="px-5 py-2.5 rounded-[9px] bg-[#00E676] hover:bg-[#00C853] text-[#041008] font-semibold text-xs flex items-center gap-2 cursor-pointer transition-colors"
+                      >
+                        <Copy className="w-4 h-4" />
+                        <span>Copy Partner Link</span>
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2.5">
-                    <span className="px-4 py-2.5 rounded-[12px] bg-[#061318] border border-[#00E5B0]/35 text-xs font-mono font-bold text-[#00E5B0]">
-                      Rewards Vault: Coming Soon
-                    </span>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div className="p-4 rounded-[12px] bg-[#040705] border border-white/10">
+                      <div className="text-xs font-medium text-[#9BA69E]">Partner Referral Code</div>
+                      <div className="text-xl font-semibold text-[#00E676] tabular-nums mt-1.5">{user.referralCode}</div>
+                      <div className="text-xs text-[#7E8A82] mt-1">+{AFFILIATE_POINTS_PER_REFERRAL} Points per signup</div>
+                    </div>
+                    <div className="p-4 rounded-[12px] bg-[#040705] border border-[#00E676]/25">
+                      <div className="text-xs font-medium text-[#9BA69E]">Available Affiliate Points</div>
+                      <div className="text-xl font-semibold text-[#00E676] tabular-nums mt-1.5">{userPts} Points</div>
+                      <div className="text-xs text-[#69F0AE] mt-1">Ready for evaluation redemption</div>
+                    </div>
+                    <div className="p-4 rounded-[12px] bg-[#040705] border border-white/10">
+                      <div className="text-xs font-medium text-[#9BA69E]">Verified Referrals</div>
+                      <div className="text-xl font-semibold text-white tabular-nums mt-1.5">{referredTraders.length} Traders</div>
+                      <div className="text-xs text-[#9BA69E] mt-1">
+                        +{referredTraders.length * AFFILIATE_POINTS_PER_REFERRAL} Points earned
+                      </div>
+                    </div>
+                    <div className="p-4 rounded-[12px] bg-[#040705] border border-[#00E5B0]/25">
+                      <div className="text-xs font-medium text-[#9BA69E]">$5,000 Two Step Price</div>
+                      <div className="text-xl font-semibold text-[#00E5B0] tabular-nums mt-1.5">{TWO_STEP_5K_POINT_PRICE} Points</div>
+                      <div className="text-xs text-[#9BA69E] mt-1">11 referrals · Instant activation</div>
+                    </div>
+                  </div>
+
+                  {/* FEATURED $5K TWO STEP PROGRESS & INSTANT BUY BAR */}
+                  <div className="p-5 rounded-[12px] bg-[#040705] border border-[#00E676]/25 flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+                    <div className="space-y-2 flex-1">
+                      <div className="flex items-center justify-between text-xs sm:text-sm">
+                        <span className="text-white font-semibold">
+                          Featured Target: $5,000 Two Step Challenge ({TWO_STEP_5K_POINT_PRICE} Points)
+                        </span>
+                        <span className="text-[#00E676] font-semibold tabular-nums">
+                          {userPts} / {TWO_STEP_5K_POINT_PRICE} Points ({progress5k}%)
+                        </span>
+                      </div>
+                      <div className="w-full h-2.5 rounded-full bg-[#090D0A] border border-white/10 overflow-hidden">
+                        <div
+                          className="h-full bg-gradient-to-r from-[#00E676] to-[#00E5B0] transition-all duration-300"
+                          style={{ width: `${progress5k}%` }}
+                        />
+                      </div>
+                      <div className="text-xs text-[#9BA69E]">
+                        {userPts >= TWO_STEP_5K_POINT_PRICE
+                          ? 'You have unlocked enough points to claim your $5,000 Two Step Challenge account immediately.'
+                          : `Refer ${refsNeededFor5k} more trader${refsNeededFor5k === 1 ? '' : 's'} (${neededFor5k} more points) to claim a $5,000 Two Step Challenge account.`}
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      onClick={handleCopyReferral}
-                      className="px-5 py-2.5 rounded-[9px] apex-glow-btn text-xs flex items-center gap-2 cursor-pointer"
+                      onClick={() => {
+                        const res = purchaseEvaluationWithPoints('two-step-5000');
+                        setDashAffiliateNotice({
+                          ok: res.ok,
+                          message: res.message,
+                          accountNumber: res.account?.accountNumber,
+                          terminalUserId: res.account?.terminalUserId,
+                          terminalPassword: res.account?.terminalPassword,
+                        });
+                      }}
+                      className="px-6 py-3 rounded-[10px] bg-[#00E676] hover:bg-[#00C853] text-[#041008] font-semibold text-xs sm:text-sm shrink-0 cursor-pointer transition-all"
                     >
-                      <Copy className="w-4 h-4" />
-                      <span>Copy Partner Link</span>
+                      Redeem $5K Two-Step ({TWO_STEP_5K_POINT_PRICE} Points)
                     </button>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="p-4 rounded-[12px] bg-[#030504] border border-white/10">
-                    <div className="text-xs text-[#A7B1AA]">Partner Referral Code</div>
-                    <div className="text-xl font-mono font-bold text-[#00E676] mt-1">{user.referralCode}</div>
+                  {dashAffiliateNotice && (
+                    <div
+                      className={`p-4 rounded-[12px] border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        dashAffiliateNotice.ok
+                          ? 'bg-[#041810] border-[#00E676]/40 text-white'
+                          : 'bg-[#1A0B0B] border-red-500/40 text-red-200'
+                      }`}
+                    >
+                      <div className="space-y-1 text-xs sm:text-sm">
+                        <div className="font-semibold text-[#00E676]">
+                          {dashAffiliateNotice.ok ? 'Evaluation Account Activated with Points' : 'Affiliate Program Notice'}
+                        </div>
+                        <div className="text-[#D5DDD8]">{dashAffiliateNotice.message}</div>
+                      </div>
+                      {dashAffiliateNotice.accountNumber && (
+                        <button
+                          type="button"
+                          onClick={() => navigate('terminal')}
+                          className="px-4 py-2 rounded-[9px] bg-[#00E676] text-[#041008] font-semibold text-xs shrink-0 cursor-pointer"
+                        >
+                          Open Terminal →
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ALL 24 EVALUATIONS POINT STORE */}
+                  <div className="space-y-4 pt-2">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-base sm:text-lg font-semibold text-white">
+                          Redeem Points Across All 24 Evaluation Accounts
+                        </h3>
+                        <p className="text-xs sm:text-sm text-[#9BA69E]">
+                          Select any challenge model below to purchase directly using your Affiliate Points balance.
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-[10px] bg-[#040705] border border-white/10">
+                        {(
+                          [
+                            { type: 'two_step' as ChallengeType, label: 'Two Step' },
+                            { type: 'three_step' as ChallengeType, label: 'Three Step' },
+                            { type: 'one_step' as ChallengeType, label: 'One Step' },
+                            { type: 'instant' as ChallengeType, label: 'Instant' },
+                          ]
+                        ).map((t) => (
+                          <button
+                            key={t.type}
+                            type="button"
+                            onClick={() => setAffiliateEvalType(t.type)}
+                            className={`px-3 py-1.5 rounded-[7px] text-xs font-medium cursor-pointer transition-colors ${
+                              affiliateEvalType === t.type
+                                ? 'bg-[#00E676] text-[#041008] font-semibold'
+                                : 'text-[#9BA69E] hover:text-white'
+                            }`}
+                          >
+                            {t.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {filteredAffiliateChallenges.map((ch) => {
+                        const costPts = getChallengePointPrice(ch);
+                        const canBuy = userPts >= costPts;
+                        const refsCount = Math.ceil(costPts / AFFILIATE_POINTS_PER_REFERRAL);
+                        return (
+                          <div
+                            key={ch.id}
+                            className={`p-4 rounded-[12px] bg-[#040705] border flex flex-col justify-between space-y-4 ${
+                              ch.id === 'two-step-5000'
+                                ? 'border-[#00E676]/60'
+                                : 'border-white/10 hover:border-white/20'
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="text-xs font-medium text-[#00E676]">
+                                  {ch.typeLabel}
+                                </div>
+                                <div className="text-xl font-semibold text-white tabular-nums mt-0.5">
+                                  ${ch.accountSize.toLocaleString()}
+                                </div>
+                                <div className="text-xs text-[#8A968E] mt-0.5">
+                                  Target: {ch.profitTargetPct === 0 ? 'Direct Funded' : `${ch.profitTargetPct}%`} · Split: {ch.profitSplitPct}%
+                                </div>
+                              </div>
+                              <div className="text-right px-2.5 py-1.5 rounded-[8px] bg-[#090D0A] border border-white/10">
+                                <div className="text-sm font-semibold text-[#00E676] tabular-nums">
+                                  {costPts} Points
+                                </div>
+                                <div className="text-[11px] text-[#9BA69E] tabular-nums">
+                                  {refsCount} Referrals
+                                </div>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const res = purchaseEvaluationWithPoints(ch.id);
+                                setDashAffiliateNotice({
+                                  ok: res.ok,
+                                  message: res.message,
+                                  accountNumber: res.account?.accountNumber,
+                                  terminalUserId: res.account?.terminalUserId,
+                                  terminalPassword: res.account?.terminalPassword,
+                                });
+                              }}
+                              className={`w-full py-2.5 px-3 rounded-[9px] font-semibold text-xs cursor-pointer transition-all ${
+                                canBuy
+                                  ? 'bg-[#00E676] hover:bg-[#00C853] text-[#041008]'
+                                  : 'bg-[#090D0A] hover:bg-[#121A14] border border-white/15 text-[#D5DDD8]'
+                              }`}
+                            >
+                              {canBuy
+                                ? `Redeem with ${costPts} Points`
+                                : `Need ${costPts - userPts} More Points (${costPts} Pts)`}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="p-4 rounded-[12px] bg-[#030504] border border-white/10">
-                    <div className="text-xs text-[#A7B1AA]">Direct Commission</div>
-                    <div className="text-xl font-mono font-bold text-white mt-1">15% Lifetime</div>
-                  </div>
-                  <div className="p-4 rounded-[12px] bg-[#030504] border border-white/10">
-                    <div className="text-xs text-[#A7B1AA]">Active Reward Coupons</div>
-                    <div className="text-xl font-mono font-bold text-[#00E676] mt-1">{userCoupons.length} Available</div>
-                  </div>
+
+                  {/* LINK PARTNER CODE IF NOT REFERRED YET */}
+                  {!user.referredBy && (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!dashPartnerCodeInput.trim()) return;
+                        const res = applyReferralCode(dashPartnerCodeInput);
+                        setDashAffiliateNotice({ ok: res.ok, message: res.message });
+                        if (res.ok) setDashPartnerCodeInput('');
+                      }}
+                      className="p-4 rounded-[12px] bg-[#040705] border border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                    >
+                      <div className="text-xs sm:text-sm text-[#9BA69E]">
+                        Have a Partner Referral Code? Apply it once to credit your partner <span className="text-[#00E676] font-medium">+{AFFILIATE_POINTS_PER_REFERRAL} Points</span>:
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={dashPartnerCodeInput}
+                          onChange={(e) => setDashPartnerCodeInput(e.target.value.toUpperCase())}
+                          placeholder="Partner Code (e.g. APEX-OWNER)"
+                          className="px-3 py-2 rounded-[8px] bg-[#090D0A] border border-white/15 text-xs font-medium text-white"
+                        />
+                        <button
+                          type="submit"
+                          className="px-4 py-2 rounded-[8px] bg-[#00E676] text-[#041008] font-semibold text-xs cursor-pointer"
+                        >
+                          Apply Code
+                        </button>
+                      </div>
+                    </form>
+                  )}
                 </div>
-              </div>
-            </section>
-          )}
+              </section>
+            );
+          })()}
 
           {/* =====================================================================
               9. SETTINGS TAB

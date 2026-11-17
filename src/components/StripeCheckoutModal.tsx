@@ -1,8 +1,11 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { usePlatform } from '../context/PlatformContext';
-import { COUNTRIES, INITIAL_CHALLENGES } from '../data/platformData';
+import {
+  COUNTRIES,
+  INITIAL_CHALLENGES,
+} from '../data/platformData';
 import { computeStripeCheckoutBreakdown } from '../engine/stripeCheckout';
 import { FundedApexLogo } from './FundedApexLogo';
 import {
@@ -109,17 +112,127 @@ const CRYPTO_NETWORKS: CryptoNetworkOption[] = [
 type CheckoutStep =
   | 'INITIAL_LOADING'
   | 'CHOOSE_PAYMENT_METHOD'
+  | 'PROCESSING_METHOD'
   | 'SELECT_COIN_NETWORK'
   | 'PREPARING_STRINGS'
   | 'SEND_CRYPTO'
+  | 'VERIFYING_DEPOSIT'
   | 'CONFIRMED';
+
+interface CheckoutProcessingScreenProps {
+  testId: string;
+  title: string;
+  subtitle: string;
+  steps: string[];
+  durationMs: number;
+  icon?: 'lock' | 'coins' | 'shield';
+}
+
+const CheckoutProcessingScreen: React.FC<CheckoutProcessingScreenProps> = ({
+  testId,
+  title,
+  subtitle,
+  steps,
+  durationMs,
+  icon = 'shield',
+}) => {
+  const [activeIdx, setActiveIdx] = useState(0);
+
+  useEffect(() => {
+    setActiveIdx(0);
+    if (steps.length <= 1) return;
+    const intervalMs = Math.max(120, Math.floor((durationMs * 0.85) / steps.length));
+    const timer = window.setInterval(() => {
+      setActiveIdx((prev) => (prev + 1 < steps.length ? prev + 1 : prev));
+    }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [steps.length, durationMs, title]);
+
+  const IconComp = icon === 'lock' ? Lock : icon === 'coins' ? Coins : ShieldCheck;
+
+  return (
+    <div
+      data-testid={testId}
+      className="py-10 sm:py-12 px-2 flex flex-col items-center text-center space-y-5"
+    >
+      <div className="relative w-16 h-16 flex items-center justify-center">
+        <div className="absolute inset-0 rounded-full border-2 border-[#00E5B0]/18" />
+        <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-[#00E5B0] border-r-[#2AFADF]/70 animate-spin" />
+        <div className="w-11 h-11 rounded-full bg-[#00E5B0]/12 border border-[#00E5B0]/35 flex items-center justify-center shadow-[0_0_24px_rgba(0,229,176,0.22)]">
+          <IconComp className="w-5 h-5 text-[#00E5B0]" />
+        </div>
+      </div>
+
+      <div className="space-y-1.5 max-w-sm">
+        <h3 className="text-lg font-display font-extrabold text-white tracking-tight">
+          {title}
+        </h3>
+        <p className="text-xs text-[#A3BDB8] leading-relaxed">{subtitle}</p>
+      </div>
+
+      {/* Smooth GPU progress bar */}
+      <div className="w-full max-w-xs h-1.5 rounded-full bg-[#08151B] border border-[#00E5B0]/20 overflow-hidden">
+        <motion.div
+          key={title}
+          initial={{ scaleX: 0.08 }}
+          animate={{ scaleX: 1 }}
+          transition={{ duration: Math.max(0.3, durationMs / 1000), ease: [0.16, 1, 0.3, 1] }}
+          style={{ transformOrigin: 'left center', willChange: 'transform' }}
+          className="h-full w-full bg-gradient-to-r from-[#00E5B0] via-[#2AFADF] to-[#00E676] rounded-full"
+        />
+      </div>
+
+      {/* Progressive sub-step milestones */}
+      <div className="w-full max-w-xs rounded-[14px] bg-[#050E13] border border-[#00E5B0]/18 p-3 space-y-2 text-left">
+        {steps.map((label, idx) => {
+          const isDone = idx < activeIdx;
+          const isCurrent = idx === activeIdx;
+          return (
+            <div key={label} className="flex items-center gap-2.5 text-[11px] font-mono">
+              <span
+                className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                  isDone
+                    ? 'bg-[#00E5B0] text-[#03120F]'
+                    : isCurrent
+                    ? 'bg-[#00E5B0]/20 border border-[#00E5B0] text-[#00E5B0]'
+                    : 'bg-white/5 border border-white/10 text-[#728F8A]'
+                }`}
+              >
+                {isDone ? (
+                  <Check className="w-2.5 h-2.5 stroke-[3]" />
+                ) : isCurrent ? (
+                  <span className="w-1.5 h-1.5 rounded-full bg-[#00E5B0] animate-pulse" />
+                ) : (
+                  <span className="w-1 h-1 rounded-full bg-[#728F8A]" />
+                )}
+              </span>
+              <span
+                className={
+                  isDone
+                    ? 'text-[#00E5B0] font-semibold'
+                    : isCurrent
+                    ? 'text-white font-semibold'
+                    : 'text-[#728F8A]'
+                }
+              >
+                {label}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
 
 export const StripeCheckoutModal: React.FC = () => {
   const {
     user,
+    navigate,
     challenges,
     userCoupons,
     adminCoupons,
+    userPurchaseRequests,
     paymentSettings,
     stripeCheckoutSession,
     closeStripeCheckout,
@@ -148,25 +261,44 @@ export const StripeCheckoutModal: React.FC = () => {
 
   // Verification & Status check state
   const [orderNumber, setOrderNumber] = useState('');
+  const [submittedOrderNumber, setSubmittedOrderNumber] = useState('');
   const [transactionRef, setTransactionRef] = useState('');
   const [screenshotUrl, setScreenshotUrl] = useState('');
   const [copiedState, setCopiedState] = useState(false);
   const [statusChecking, setStatusChecking] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const submittedOrderRef = useRef<string | null>(null);
+  const stepTimerRef = useRef<number | null>(null);
+
+  const clearStepTimer = () => {
+    if (stepTimerRef.current !== null) {
+      window.clearTimeout(stepTimerRef.current);
+      stepTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => clearStepTimer();
+  }, []);
 
   // 15-Minute Countdown Timer
   const [timeLeftSeconds, setTimeLeftSeconds] = useState(15 * 60);
 
   useEffect(() => {
     if (stripeCheckoutSession) {
+      clearStepTimer();
       setStep('INITIAL_LOADING');
       setSelectedMethod('crypto');
       setSelectedNetworkId('usdt_bep20');
       setIsEditingAddress(false);
+      setSubmittedOrderNumber('');
       setTransactionRef('');
       setScreenshotUrl('');
       setStatusChecking(false);
       setStatusMessage(null);
+      setStatusError(null);
+      submittedOrderRef.current = null;
       setCopiedState(false);
       setTimeLeftSeconds(15 * 60);
 
@@ -178,20 +310,51 @@ export const StripeCheckoutModal: React.FC = () => {
       setBillingCountry(user?.country || 'India');
       setIsEditingAddress(!user?.email);
 
-      const initCode = stripeCheckoutSession.initialCouponCode || '';
+      const initCode = (stripeCheckoutSession.initialCouponCode || '').trim().toUpperCase();
       setCouponInput(initCode);
-      setAppliedCoupon(initCode);
-      setCouponFeedback(
-        initCode ? { type: 'success', msg: `Coupon code ${initCode.toUpperCase()} applied.` } : null
-      );
+      if (initCode) {
+        const initTarget =
+          challenges.find((c) => c.id === stripeCheckoutSession.challengeId) ||
+          INITIAL_CHALLENGES.find((c) => c.id === stripeCheckoutSession.challengeId) ||
+          challenges[0] ||
+          INITIAL_CHALLENGES[0];
+        const usedCodes = userPurchaseRequests
+          .filter((r) => r.status !== 'rejected' && r.couponCode)
+          .map((r) => String(r.couponCode));
+        const initTest = computeStripeCheckoutBreakdown(
+          initTarget,
+          initCode,
+          userCoupons,
+          adminCoupons,
+          usedCodes
+        );
+        if (initTest.validCode) {
+          setAppliedCoupon(initCode);
+          setCouponFeedback({
+            type: 'success',
+            msg: `Coupon code ${initCode} applied! (-${initTest.discountPct}% OFF)`,
+          });
+        } else {
+          setAppliedCoupon('');
+          setCouponFeedback({
+            type: 'error',
+            msg: initTest.errorMessage || 'Coupon is not valid for this evaluation.',
+          });
+        }
+      } else {
+        setAppliedCoupon('');
+        setCouponFeedback(null);
+      }
 
-      // Auto advance from initial loading
-      const t = setTimeout(() => {
+      // Brief smooth initial encrypted checkout session screen
+      stepTimerRef.current = window.setTimeout(() => {
+        stepTimerRef.current = null;
         setStep('CHOOSE_PAYMENT_METHOD');
-      }, 700);
-      return () => clearTimeout(t);
+      }, 450);
+    } else {
+      clearStepTimer();
     }
-  }, [stripeCheckoutSession, user]);
+  }, [stripeCheckoutSession?.challengeId, stripeCheckoutSession?.initialCouponCode]);
 
   // Lock body scroll and listen for Escape key when modal is open
   useEffect(() => {
@@ -229,15 +392,24 @@ export const StripeCheckoutModal: React.FC = () => {
     );
   }, [activeId, challenges]);
 
+  const usedCodesByUser = useMemo(
+    () =>
+      userPurchaseRequests
+        .filter((r) => r.status !== 'rejected' && r.couponCode)
+        .map((r) => String(r.couponCode)),
+    [userPurchaseRequests]
+  );
+
   const breakdown = useMemo(
     () =>
       computeStripeCheckoutBreakdown(
         baseChallenge,
         appliedCoupon,
         userCoupons,
-        adminCoupons
+        adminCoupons,
+        usedCodesByUser
       ),
-    [baseChallenge, appliedCoupon, userCoupons, adminCoupons]
+    [baseChallenge, appliedCoupon, userCoupons, adminCoupons, usedCodesByUser]
   );
 
   const effectiveChallenge = useMemo(() => {
@@ -347,7 +519,8 @@ export const StripeCheckoutModal: React.FC = () => {
       baseChallenge,
       clean,
       userCoupons,
-      adminCoupons
+      adminCoupons,
+      usedCodesByUser
     );
     if (!test.validCode) {
       setAppliedCoupon('');
@@ -364,51 +537,84 @@ export const StripeCheckoutModal: React.FC = () => {
     });
   };
 
+  const transitionWithProcessing = (
+    processingStep: CheckoutStep,
+    nextStep: CheckoutStep,
+    delayMs: number
+  ) => {
+    clearStepTimer();
+    setStep(processingStep);
+    stepTimerRef.current = window.setTimeout(() => {
+      stepTimerRef.current = null;
+      setStep(nextStep);
+    }, delayMs);
+  };
+
   const handleContinueToCoinSelection = () => {
     if (!billingEmail || !billingEmail.includes('@')) {
       setIsEditingAddress(true);
       pushNotification('Email Required', 'Please enter your email address for terminal account credentials delivery.', 'warning');
       return;
     }
-    setStep('SELECT_COIN_NETWORK');
+    transitionWithProcessing('PROCESSING_METHOD', 'SELECT_COIN_NETWORK', 540);
   };
 
   const handleContinueToPreparing = () => {
-    setStep('PREPARING_STRINGS');
-    setTimeout(() => {
-      setStep('SEND_CRYPTO');
-    }, 650);
+    transitionWithProcessing('PREPARING_STRINGS', 'SEND_CRYPTO', 640);
   };
 
-  const handleCheckStatus = () => {
+  const handleCheckStatus = async () => {
+    if (statusChecking) return;
+    setStatusError(null);
+    if (!billingEmail || !billingEmail.includes('@')) {
+      setStatusError('Valid email address is required before submitting payment confirmation.');
+      return;
+    }
+
+    if (submittedOrderRef.current) {
+      setSubmittedOrderNumber(submittedOrderRef.current);
+      setStep('CONFIRMED');
+      return;
+    }
+
+    clearStepTimer();
     setStatusChecking(true);
-    setStatusMessage('Checking blockchain confirmations for incoming deposit...');
+    setStep('VERIFYING_DEPOSIT');
+    setStatusMessage('Verifying and submitting your payment confirmation...');
 
-    // Submit purchase request so it is queued in the Admin Panel
-    submitAccountPurchaseRequest({
-      challengeId: effectiveChallenge.id,
-      couponCode: appliedCoupon || undefined,
-      paymentMethod: 'CRYPTO',
-      transactionRef: transactionRef.trim() || `TXID-${orderNumber}`,
-      paymentScreenshotUrl: screenshotUrl || undefined,
-      payerNotes: `${selectedNetwork.coin} on ${selectedNetwork.standard} · Address: ${activeDepositAddress}`,
-      finalAmountUsd: breakdown.finalAmountUsd,
-      discountPct: breakdown.discountPct,
-      guestEmail: billingEmail,
-      guestName: billingName,
-    });
+    try {
+      const req = submitAccountPurchaseRequest({
+        challengeId: effectiveChallenge.id,
+        couponCode: appliedCoupon || undefined,
+        paymentMethod: 'CRYPTO',
+        transactionRef: transactionRef.trim() || `TXID-${orderNumber}`,
+        paymentScreenshotUrl: screenshotUrl || undefined,
+        payerNotes: `${selectedNetwork.coin} on ${selectedNetwork.standard} · Address: ${activeDepositAddress}`,
+        finalAmountUsd: breakdown.finalAmountUsd,
+        discountPct: breakdown.discountPct,
+        guestEmail: billingEmail,
+        guestName: billingName,
+      });
+      submittedOrderRef.current = req.orderNumber;
+      setSubmittedOrderNumber(req.orderNumber);
 
-    setTimeout(() => {
-      setStatusChecking(false);
+      await new Promise((r) => setTimeout(r, 720));
       setStatusMessage(
-        'Transaction logged! Your order is queued for instant Admin confirmation & terminal account activation.'
+        `Payment queued (#${req.orderNumber})! Our desk is verifying your deposit and will activate your terminal account shortly.`
       );
       pushNotification(
         'Payment Queued for Verification ✓',
-        `Order #${orderNumber} submitted. Admin will confirm within minutes.`,
+        `Order #${req.orderNumber} submitted cleanly for Admin approval.`,
         'success'
       );
-    }, 1200);
+      setStep('CONFIRMED');
+    } catch (err: any) {
+      setStatusMessage(null);
+      setStatusError(err?.message || 'Unable to submit payment request. Please verify your email.');
+      setStep('SEND_CRYPTO');
+    } finally {
+      setStatusChecking(false);
+    }
   };
 
   return createPortal(
@@ -416,27 +622,28 @@ export const StripeCheckoutModal: React.FC = () => {
       <motion.div
         role="dialog"
         aria-modal="true"
+        data-checkout-modal="true"
         data-interactive-container
-        style={{ willChange: 'transform, opacity' }}
+        style={{ willChange: 'opacity' }}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
-        transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+        transition={{ duration: 0.12, ease: 'easeOut' }}
         onClick={(e) => {
           if (e.target === e.currentTarget) {
             closeStripeCheckout();
           }
         }}
-        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/85 p-3 sm:p-4 overflow-y-auto"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-3 sm:p-4 overflow-y-auto"
       >
         <motion.div
           data-interactive-container
           style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-          initial={{ opacity: 0, y: 10, scale: 0.985 }}
+          initial={{ opacity: 0, y: 6, scale: 0.99 }}
           animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 8, scale: 0.985 }}
-          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          className="w-full max-w-lg max-h-[92dvh] flex flex-col rounded-[24px] bg-[#071318]/98 border border-[#00E5B0]/35 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] overflow-hidden my-auto"
+          exit={{ opacity: 0, y: 4, scale: 0.99 }}
+          transition={{ duration: 0.12, ease: 'easeOut' }}
+          className="w-full max-w-lg max-h-[92dvh] flex flex-col rounded-[24px] bg-[#071318] border border-[#00E5B0]/35 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] overflow-hidden my-auto"
         >
         {/* HEADER BAR — Compact 1-Line "Secure checkout" badge */}
         <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-3.5 border-b border-[#00E5B0]/18 bg-[#050E13] shrink-0">
@@ -460,82 +667,105 @@ export const StripeCheckoutModal: React.FC = () => {
           </div>
         </div>
 
-        {/* STEP PROGRESS SEGMENTS */}
-        {step !== 'INITIAL_LOADING' && step !== 'PREPARING_STRINGS' && (
-          <div className="flex items-center justify-center gap-2 py-2.5 px-4 bg-[#050B0E] border-b border-[#00E5B0]/12 shrink-0">
-            <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold">
-              <span
-                className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] ${
-                  step === 'CHOOSE_PAYMENT_METHOD'
-                    ? 'bg-[#00E5B0] text-[#03120F]'
-                    : 'bg-[#0D1E26] text-[#A3BDB8]'
-                }`}
-              >
-                1
-              </span>
-              <span className={step === 'CHOOSE_PAYMENT_METHOD' ? 'text-[#00E5B0]' : 'text-[#728F8A]'}>
-                Method
-              </span>
+        {/* STEP PROGRESS SEGMENTS (Visible across every checkout & processing step) */}
+        {(() => {
+          const activeStepIdx =
+            step === 'INITIAL_LOADING' || step === 'CHOOSE_PAYMENT_METHOD'
+              ? 1
+              : step === 'PROCESSING_METHOD' || step === 'SELECT_COIN_NETWORK'
+              ? 2
+              : step === 'PREPARING_STRINGS' || step === 'SEND_CRYPTO'
+              ? 3
+              : 4;
+          const stepItems = [
+            { idx: 1, label: 'Method' },
+            { idx: 2, label: 'Network' },
+            { idx: 3, label: 'Deposit' },
+            { idx: 4, label: 'Confirm' },
+          ];
+          return (
+            <div className="flex items-center justify-center gap-1.5 sm:gap-2 py-2.5 px-3 sm:px-4 bg-[#050B0E] border-b border-[#00E5B0]/12 shrink-0">
+              {stepItems.map((item, i) => {
+                const isDone =
+                  step === 'CONFIRMED' ? true : item.idx < activeStepIdx;
+                const isCurrent = step !== 'CONFIRMED' && item.idx === activeStepIdx;
+                return (
+                  <React.Fragment key={item.idx}>
+                    <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold">
+                      <span
+                        className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] transition-all ${
+                          isDone
+                            ? 'bg-[#00E5B0] text-[#03120F]'
+                            : isCurrent
+                            ? 'bg-[#00E5B0] text-[#03120F] ring-2 ring-[#00E5B0]/35'
+                            : 'bg-[#0D1E26] text-[#A3BDB8]'
+                        }`}
+                      >
+                        {isDone ? <Check className="w-3 h-3 stroke-[3]" /> : item.idx}
+                      </span>
+                      <span
+                        className={
+                          isDone || isCurrent ? 'text-[#00E5B0]' : 'text-[#728F8A]'
+                        }
+                      >
+                        {item.label}
+                      </span>
+                    </div>
+                    {i < stepItems.length - 1 && (
+                      <span
+                        className={`w-3 sm:w-4 h-[1px] transition-colors ${
+                          isDone ? 'bg-[#00E5B0]/60' : 'bg-white/15'
+                        }`}
+                      />
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </div>
-            <span className="w-4 h-[1px] bg-white/15" />
-            <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold">
-              <span
-                className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] ${
-                  step === 'SELECT_COIN_NETWORK'
-                    ? 'bg-[#00E5B0] text-[#03120F]'
-                    : 'bg-[#0D1E26] text-[#A3BDB8]'
-                }`}
-              >
-                2
-              </span>
-              <span className={step === 'SELECT_COIN_NETWORK' ? 'text-[#00E5B0]' : 'text-[#728F8A]'}>
-                Network
-              </span>
-            </div>
-            <span className="w-4 h-[1px] bg-white/15" />
-            <div className="flex items-center gap-1.5 text-[11px] font-mono font-bold">
-              <span
-                className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] ${
-                  step === 'SEND_CRYPTO'
-                    ? 'bg-[#00E5B0] text-[#03120F]'
-                    : 'bg-[#0D1E26] text-[#A3BDB8]'
-                }`}
-              >
-                3
-              </span>
-              <span className={step === 'SEND_CRYPTO' ? 'text-[#00E5B0]' : 'text-[#728F8A]'}>
-                Deposit
-              </span>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* CONTENT AREA */}
-        <motion.div
-          key={step}
+        <div
           data-interactive-container
-          style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-          initial={{ opacity: 0.9, y: 4 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
           className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-5 custom-scrollbar"
         >
+          <AnimatePresence mode="wait">
           {/* 1. INITIAL LOADING STATE */}
           {step === 'INITIAL_LOADING' && (
-            <div className="py-14 text-center space-y-4">
-              <div className="w-12 h-12 mx-auto rounded-full border-2 border-[#00E676]/20 border-t-[#00E676] animate-spin" />
-              <div className="space-y-1">
-                <h3 className="text-lg font-display font-bold text-white">
-                  Securing your checkout...
-                </h3>
-                <p className="text-xs text-[#A7B1AA]">Encrypted session : please wait</p>
-              </div>
-            </div>
+            <motion.div
+              key="INITIAL_LOADING"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.14, ease: 'easeOut' }}
+            >
+              <CheckoutProcessingScreen
+                testId="checkout-step-loading"
+                title="Securing Your Checkout..."
+                subtitle={`Initializing encrypted order session for ${effectiveChallenge.typeLabel} · $${(effectiveChallenge.accountSize / 1000).toFixed(0)}K`}
+                steps={[
+                  'Encrypting checkout session',
+                  'Syncing live challenge pricing',
+                  'Preparing payment rails',
+                ]}
+                durationMs={450}
+                icon="lock"
+              />
+            </motion.div>
           )}
 
           {/* 2. CHOOSE PAYMENT METHOD SCREEN */}
           {step === 'CHOOSE_PAYMENT_METHOD' && (
-            <div className="space-y-4">
+            <motion.div
+              key="CHOOSE_PAYMENT_METHOD"
+              data-testid="checkout-step-method"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+              className="space-y-4"
+            >
               <div>
                 <h2 className="text-xl font-display font-extrabold text-white">
                   Choose payment method
@@ -703,7 +933,7 @@ export const StripeCheckoutModal: React.FC = () => {
                     </div>
                   </div>
                   <span className="w-4 h-4 rounded-full border-2 border-[#00E5B0] flex items-center justify-center">
-                    <span className="w-2 h-2 rounded-full bg-[#00E5B0]" />
+                    {selectedMethod === 'crypto' && <span className="w-2 h-2 rounded-full bg-[#00E5B0]" />}
                   </span>
                 </div>
 
@@ -736,6 +966,7 @@ export const StripeCheckoutModal: React.FC = () => {
               <div className="space-y-2 pt-2">
                 <button
                   type="button"
+                  data-testid="checkout-continue-network-btn"
                   onClick={handleContinueToCoinSelection}
                   className="w-full py-3.5 px-4 rounded-[14px] bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] font-display font-bold text-sm cursor-pointer transition-all shadow-[0_8px_24px_rgba(0,229,176,0.3)]"
                 >
@@ -758,15 +989,50 @@ export const StripeCheckoutModal: React.FC = () => {
                   </button>
                 </div>
               </div>
-            </div>
+            </motion.div>
+          )}
+
+          {/* 2B. PROCESSING METHOD -> NETWORK SELECTION */}
+          {step === 'PROCESSING_METHOD' && (
+            <motion.div
+              key="PROCESSING_METHOD"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              <CheckoutProcessingScreen
+                testId="checkout-step-processing-method"
+                title="Processing Order & Payment Method..."
+                subtitle={`Locking $${breakdown.finalAmountUsd.toFixed(2)} USD${appliedCoupon ? ` (${appliedCoupon})` : ''} for ${billingEmail}`}
+                steps={[
+                  'Billing details & discount validated',
+                  `Order #${orderNumber} reserved`,
+                  'Loading multi-chain deposit networks',
+                ]}
+                durationMs={540}
+                icon="coins"
+              />
+            </motion.div>
           )}
 
           {/* 3. SELECT COIN & NETWORK SCREEN */}
           {step === 'SELECT_COIN_NETWORK' && (
-            <div className="space-y-4">
+            <motion.div
+              key="SELECT_COIN_NETWORK"
+              data-testid="checkout-step-network"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+              className="space-y-4"
+            >
               <button
                 type="button"
-                onClick={() => setStep('CHOOSE_PAYMENT_METHOD')}
+                onClick={() => {
+                  clearStepTimer();
+                  setStep('CHOOSE_PAYMENT_METHOD');
+                }}
                 className="text-xs font-semibold text-[#A3BDB8] hover:text-[#00E5B0] flex items-center gap-1 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
@@ -860,6 +1126,7 @@ export const StripeCheckoutModal: React.FC = () => {
               <div className="space-y-2 pt-2">
                 <button
                   type="button"
+                  data-testid="checkout-generate-address-btn"
                   onClick={handleContinueToPreparing}
                   className="w-full py-3.5 px-4 rounded-[14px] bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] font-display font-bold text-sm cursor-pointer transition-all shadow-[0_8px_24px_rgba(0,229,176,0.3)]"
                 >
@@ -875,30 +1142,50 @@ export const StripeCheckoutModal: React.FC = () => {
                   </button>
                 </div>
               </div>
-            </div>
+            </motion.div>
           )}
 
-          {/* 4. PREPARING STRINGS LOADER */}
+          {/* 4. PREPARING STRINGS / ADDRESS GENERATOR LOADER */}
           {step === 'PREPARING_STRINGS' && (
-            <div className="py-14 text-center space-y-4">
-              <div className="w-12 h-12 mx-auto rounded-full border-2 border-[#00E676]/20 border-t-[#00E676] animate-spin" />
-              <div className="space-y-1">
-                <h3 className="text-lg font-display font-bold text-white">
-                  Preparing payment strings...
-                </h3>
-                <p className="text-xs text-[#A7B1AA]">
-                  Generating {selectedNetwork.coin} ({selectedNetwork.standard}) deposit details
-                </p>
-              </div>
-            </div>
+            <motion.div
+              key="PREPARING_STRINGS"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              <CheckoutProcessingScreen
+                testId="checkout-step-preparing-address"
+                title="Generating Secure Deposit Address..."
+                subtitle={`Allocating ${selectedNetwork.coin} (${selectedNetwork.standard}) gateway & 15:00 quote lock`}
+                steps={[
+                  `${selectedNetwork.coin} · ${selectedNetwork.standard} rail active`,
+                  'Encoding encrypted QR & wallet address',
+                  'Activating 15:00 checkout countdown',
+                ]}
+                durationMs={640}
+                icon="shield"
+              />
+            </motion.div>
           )}
 
           {/* 5. SEND CRYPTO SCREEN */}
           {step === 'SEND_CRYPTO' && (
-            <div className="space-y-4">
+            <motion.div
+              key="SEND_CRYPTO"
+              data-testid="checkout-step-deposit"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+              className="space-y-4"
+            >
               <button
                 type="button"
-                onClick={() => setStep('SELECT_COIN_NETWORK')}
+                onClick={() => {
+                  clearStepTimer();
+                  setStep('SELECT_COIN_NETWORK');
+                }}
                 className="text-xs font-semibold text-[#A7B1AA] hover:text-[#00E676] flex items-center gap-1 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
@@ -1045,6 +1332,12 @@ export const StripeCheckoutModal: React.FC = () => {
                 )}
               </div>
 
+              {statusError && (
+                <div className="p-3.5 rounded-[12px] bg-red-500/10 border border-red-500/35 text-xs text-red-300">
+                  {statusError}
+                </div>
+              )}
+
               {statusMessage && (
                 <div className="p-3.5 rounded-[12px] bg-[#00E5B0]/10 border border-[#00E5B0]/30 text-xs text-[#00E5B0] flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 shrink-0 text-[#00E5B0]" />
@@ -1056,6 +1349,7 @@ export const StripeCheckoutModal: React.FC = () => {
               <div className="space-y-2 pt-1">
                 <button
                   type="button"
+                  data-testid="checkout-verify-payment-btn"
                   onClick={handleCheckStatus}
                   disabled={statusChecking}
                   className="w-full py-3.5 px-4 rounded-[14px] bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] font-display font-bold text-sm flex items-center justify-center gap-2 cursor-pointer transition-all shadow-[0_8px_24px_rgba(0,229,176,0.3)]"
@@ -1063,10 +1357,10 @@ export const StripeCheckoutModal: React.FC = () => {
                   {statusChecking ? (
                     <>
                       <RefreshCw className="w-4 h-4 animate-spin text-[#03120F]" />
-                      <span>Checking blockchain status...</span>
+                      <span>Verifying Payment...</span>
                     </>
                   ) : (
-                    <span>Check status</span>
+                    <span>I Have Paid · Verify &amp; Submit Order →</span>
                   )}
                 </button>
 
@@ -1078,9 +1372,115 @@ export const StripeCheckoutModal: React.FC = () => {
                   Cancel payment
                 </button>
               </div>
-            </div>
+            </motion.div>
           )}
-        </motion.div>
+
+          {/* 6. VERIFYING DEPOSIT PROCESSING SCREEN */}
+          {step === 'VERIFYING_DEPOSIT' && (
+            <motion.div
+              key="VERIFYING_DEPOSIT"
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.16, ease: 'easeOut' }}
+            >
+              <CheckoutProcessingScreen
+                testId="checkout-step-verifying"
+                title="Processing & Submitting Payment..."
+                subtitle={`Registering ${selectedNetwork.coin} deposit for Order #${submittedOrderNumber || orderNumber}`}
+                steps={[
+                  `Scanning ${selectedNetwork.standard} reference`,
+                  screenshotUrl ? 'Attaching payment receipt screenshot' : 'Recording transaction details',
+                  'Dispatching to Admin Approval Desk',
+                ]}
+                durationMs={720}
+                icon="shield"
+              />
+            </motion.div>
+          )}
+
+          {/* 7. CONFIRMED COMPLETION SCREEN */}
+          {step === 'CONFIRMED' && (
+            <motion.div
+              key="CONFIRMED"
+              data-testid="checkout-step-confirmed"
+              initial={{ opacity: 0, scale: 0.97, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              className="py-4 space-y-5 text-center"
+            >
+              <div className="w-16 h-16 mx-auto rounded-full bg-[#00E5B0]/15 border-2 border-[#00E5B0] flex items-center justify-center shadow-[0_0_32px_rgba(0,229,176,0.28)]">
+                <CheckCircle2 className="w-8 h-8 text-[#00E5B0]" />
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-[#00E5B0]/15 border border-[#00E5B0]/35 text-[10px] font-mono font-bold text-[#00E5B0] uppercase tracking-wider">
+                  Payment Queued for Verification
+                </div>
+                <h2 className="text-xl font-display font-extrabold text-white">
+                  Order #{submittedOrderNumber || orderNumber} Submitted
+                </h2>
+                <p className="text-xs text-[#A3BDB8] max-w-sm mx-auto leading-relaxed">
+                  Your deposit request has been dispatched to our Admin Approval Desk. Your trading credentials will be delivered to <strong className="text-white">{billingEmail}</strong> upon confirmation.
+                </p>
+              </div>
+
+              <div className="p-4 rounded-[16px] bg-[#050E13] border border-[#00E5B0]/22 space-y-2.5 text-xs text-left">
+                <div className="flex items-center justify-between py-1 border-b border-white/5">
+                  <span className="font-mono text-[10px] uppercase text-[#728F8A]">Evaluation</span>
+                  <span className="font-bold text-white">
+                    {effectiveChallenge.typeLabel} · ${(effectiveChallenge.accountSize / 1000).toFixed(0)}K
+                  </span>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-white/5">
+                  <span className="font-mono text-[10px] uppercase text-[#728F8A]">Amount Paid</span>
+                  <span className="font-mono font-extrabold text-[#00E5B0]">
+                    ${breakdown.finalAmountUsd.toFixed(2)} USD
+                  </span>
+                </div>
+                <div className="flex items-center justify-between py-1 border-b border-white/5">
+                  <span className="font-mono text-[10px] uppercase text-[#728F8A]">Network</span>
+                  <span className="font-mono font-semibold text-white">
+                    {selectedNetwork.coin} · {selectedNetwork.standard}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between py-1">
+                  <span className="font-mono text-[10px] uppercase text-[#728F8A]">Status</span>
+                  <span className="font-mono font-bold text-[#38F8D2]">Pending Admin Approval</span>
+                </div>
+              </div>
+
+              <div className="space-y-2 pt-1">
+                {user && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeStripeCheckout();
+                      navigate('dashboard');
+                    }}
+                    className="w-full py-3.5 px-4 rounded-[14px] bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] font-display font-bold text-sm cursor-pointer transition-all shadow-[0_8px_24px_rgba(0,229,176,0.3)]"
+                  >
+                    Go to Dashboard &amp; Track Order →
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-testid="checkout-done-btn"
+                  onClick={closeStripeCheckout}
+                  className={`w-full py-3 px-4 rounded-[14px] font-display font-bold text-sm cursor-pointer transition-all ${
+                    user
+                      ? 'bg-[#08151B] hover:bg-[#0D212A] border border-[#00E5B0]/25 text-white'
+                      : 'bg-[#00E5B0] hover:bg-[#2AFADF] text-[#03120F] shadow-[0_8px_24px_rgba(0,229,176,0.3)]'
+                  }`}
+                >
+                  Done &amp; Close Checkout
+                </button>
+              </div>
+            </motion.div>
+          )}
+          </AnimatePresence>
+        </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>,

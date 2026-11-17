@@ -10,8 +10,16 @@ import {
   resolveChallengeRulesForAccount,
   exportOrdersToCsv,
   TradeOrderRecord,
+  validateAndComputeSlTpPreview,
+  computeSlTpPresets,
+  formatCandleCountdown,
+  resolveChartPriceOrderType,
+  getMarketStatus,
+  calculateRequiredMargin,
+  formatAccountRulesSummary,
 } from '../engine/tradingEngine';
-import { ApexLiveCandlestickChart, ChartTypeMode } from './ApexLiveCandlestickChart';
+import type { ChartTypeMode } from './ApexLiveCandlestickChart';
+import { TradingTerminalChart } from './TradingTerminalChart';
 import { FundedApexLogo } from './FundedApexLogo';
 import {
   ArrowLeft,
@@ -114,10 +122,17 @@ export const TradingTerminalView: React.FC = () => {
   // Active Symbol & Timeframe
   const [symbol, setSymbol] = useState<SymbolCode>('XAUUSD');
   const [secondarySymbol, setSecondarySymbol] = useState<SymbolCode>('EURUSD');
+  const [chartFocusTrigger, setChartFocusTrigger] = useState<number>(1);
   const [timeframe, setTimeframe] = useState(TIMEFRAMES[4]); // 15m default
   const [showAllTimeframes, setShowAllTimeframes] = useState(false);
   const [volume, setVolume] = useState<string>('0.01');
   const [showLotDropdown, setShowLotDropdown] = useState(false);
+
+  const handleSelectPair = (nextSymbol: SymbolCode) => {
+    setSymbol(nextSymbol);
+    setChartFocusTrigger((prev) => prev + 1);
+    setShowPairModal(false);
+  };
 
   // Chart Type & Multi-Chart Layout
   const [chartType, setChartType] = useState<ChartTypeMode>('candles');
@@ -131,6 +146,7 @@ export const TradingTerminalView: React.FC = () => {
   const [showPositionsDrawer, setShowPositionsDrawer] = useState(false);
   const [showAdvancedOrderTicket, setShowAdvancedOrderTicket] = useState(false);
   const [showAlertsModal, setShowAlertsModal] = useState(false);
+  const [showAccountRulesModal, setShowAccountRulesModal] = useState(false);
 
   // Price Alerts State
   const [priceAlerts, setPriceAlerts] = useState<PriceAlertItem[]>(() => {
@@ -143,6 +159,9 @@ export const TradingTerminalView: React.FC = () => {
   });
   const [newAlertPrice, setNewAlertPrice] = useState<string>('');
   const [newAlertCondition, setNewAlertCondition] = useState<'ABOVE' | 'BELOW'>('ABOVE');
+
+  const priceAlertsRef = useRef<PriceAlertItem[]>(priceAlerts);
+  priceAlertsRef.current = priceAlerts;
 
   useEffect(() => {
     try {
@@ -159,12 +178,14 @@ export const TradingTerminalView: React.FC = () => {
   const [advEntryPrice, setAdvEntryPrice] = useState<string>('');
   const [advSl, setAdvSl] = useState<string>('');
   const [advTp, setAdvTp] = useState<string>('');
+  const [advOrderError, setAdvOrderError] = useState<string | null>(null);
 
   // Modify Order state
   const [editingOrder, setEditingOrder] = useState<TradeOrderRecord | null>(null);
   const [editSl, setEditSl] = useState<string>('');
   const [editTp, setEditTp] = useState<string>('');
   const [editEntry, setEditEntry] = useState<string>('');
+  const [editOrderError, setEditOrderError] = useState<string | null>(null);
 
   // Blotter tab
   const [blotterTab, setBlotterTab] = useState<'positions' | 'pending' | 'history'>('positions');
@@ -217,24 +238,28 @@ export const TradingTerminalView: React.FC = () => {
   }, [currentQuote.bid, currentQuote.ask]);
 
   useEffect(() => {
-    const nextMap: Record<string, 'up' | 'down'> = {};
-    let changed = false;
-    Object.keys(quotes).forEach((sym) => {
-      const q = quotes[sym];
-      if (!q) return;
-      const prev = prevAllBidsRef.current[sym];
-      if (prev !== undefined && prev !== q.bid) {
-        nextMap[sym] = q.bid > prev ? 'up' : 'down';
-        changed = true;
+    if (showPairModal) {
+      const nextMap: Record<string, 'up' | 'down'> = {};
+      let changed = false;
+      Object.keys(quotes).forEach((sym) => {
+        const q = quotes[sym];
+        if (!q) return;
+        const prev = prevAllBidsRef.current[sym];
+        if (prev !== undefined && prev !== q.bid) {
+          nextMap[sym] = q.bid > prev ? 'up' : 'down';
+          changed = true;
+        }
+        prevAllBidsRef.current[sym] = q.bid;
+      });
+      if (changed) {
+        setSymbolTickMap((prev) => ({ ...prev, ...nextMap }));
       }
-      prevAllBidsRef.current[sym] = q.bid;
-    });
-    if (changed) {
-      setSymbolTickMap((prev) => ({ ...prev, ...nextMap }));
     }
 
-    // Evaluate active price alerts against verified live quotes
+    // Evaluate active price alerts against verified live quotes only when alerts exist
+    if (priceAlertsRef.current.length === 0) return;
     setPriceAlerts((prevAlerts) => {
+      if (prevAlerts.length === 0) return prevAlerts;
       let alertUpdated = false;
       const nextAlerts = prevAlerts.map((al) => {
         if (!al.enabled || al.triggered) return al;
@@ -261,37 +286,33 @@ export const TradingTerminalView: React.FC = () => {
       });
       return alertUpdated ? nextAlerts : prevAlerts;
     });
-  }, [quotes, pushNotification]);
+  }, [quotes, showPairModal, pushNotification]);
+
+  const [marketClockMs, setMarketClockMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setMarketClockMs(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const marketStatus = useMemo(
+    () => getMarketStatus(symbol, marketClockMs),
+    [symbol, marketClockMs]
+  );
 
   useEffect(() => {
     const updateCountdown = () => {
-      const nowSec = Math.floor(Date.now() / 1000);
-      const tfSec = Math.max(1, timeframe.seconds);
-      const secPassed = nowSec % tfSec;
-      const secRemaining = Math.max(0, tfSec - secPassed);
-      const days = Math.floor(secRemaining / 86400);
-      const hrs = Math.floor((secRemaining % 86400) / 3600);
-      const mins = Math.floor((secRemaining % 3600) / 60);
-      const secs = secRemaining % 60;
-      if (days > 0) {
-        setCandleCountdown(
-          `${days}d ${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`
-        );
-      } else if (hrs > 0) {
-        setCandleCountdown(
-          `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs
-            .toString()
-            .padStart(2, '0')}`
-        );
-      } else {
-        setCandleCountdown(`${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`);
+      const now = Date.now();
+      if (!getMarketStatus(symbol, now).isOpen) {
+        setCandleCountdown('CLOSED');
+        return;
       }
+      setCandleCountdown(formatCandleCountdown(now, timeframe.seconds));
     };
 
     updateCountdown();
     const interval = setInterval(updateCountdown, 1000);
     return () => clearInterval(interval);
-  }, [timeframe.seconds]);
+  }, [symbol, timeframe.seconds]);
 
   const [previewChallengeType, setPreviewChallengeType] = useState<ChallengeType>('two_step');
   const [previewAccountSize, setPreviewAccountSize] = useState<number>(3000);
@@ -304,7 +325,7 @@ export const TradingTerminalView: React.FC = () => {
 
   useEffect(() => {
     if (!terminalTopBanner) return;
-    const clearTimer = setTimeout(() => setTerminalTopBanner(null), 1000);
+    const clearTimer = setTimeout(() => setTerminalTopBanner(null), 2600);
     return () => clearTimeout(clearTimer);
   }, [terminalTopBanner]);
 
@@ -522,16 +543,38 @@ export const TradingTerminalView: React.FC = () => {
         detail: `${targetPos.side} ${targetPos.volume.toFixed(2)} Lot closed (${pnlVal >= 0 ? '+' : ''}$${pnlVal.toFixed(2)})`,
         tone: pnlVal >= 0 ? 'emerald' : 'rose',
       });
+    } else if (!res.ok && res.error) {
+      setTerminalTopBanner({
+        id: `${Date.now()}-close-err`,
+        title: `Close Blocked • ${targetPos?.symbol || symbol}`,
+        detail: res.error,
+        tone: 'rose',
+      });
     }
     return res;
   };
 
-  const handleQuickTrade = (orderSide: OrderSide) => {
+  const handleQuickTrade = (orderSide: OrderSide, targetSymbol: SymbolCode = symbol) => {
+    setAdvOrderError(null);
+    const targetMarket = getMarketStatus(targetSymbol);
+    if (!targetMarket.isOpen) {
+      setAdvOrderError(targetMarket.reason);
+      setTerminalTopBanner({
+        id: `${Date.now()}-closed`,
+        title: `Market Closed • ${targetSymbol}`,
+        detail: targetMarket.reason,
+        tone: 'rose',
+      });
+      pushNotification('Market Closed (Sat–Sun)', targetMarket.reason, 'warning');
+      return;
+    }
+
+    const targetSpec = INSTRUMENTS[targetSymbol] || spec;
     const sl = parseFloat(advSl) || undefined;
     const tp = parseFloat(advTp) || undefined;
     const res = submitOrder({
       accountId: effectiveAccount.id,
-      symbol,
+      symbol: targetSymbol,
       side: orderSide,
       orderType: 'MARKET',
       volume: parsedVolume > 0 ? parsedVolume : 0.01,
@@ -542,13 +585,80 @@ export const TradingTerminalView: React.FC = () => {
       setTerminalTopBanner({
         id: res.order.id,
         title: `${res.order.side} Order Executed • ${res.order.symbol}`,
-        detail: `${res.order.volume.toFixed(2)} Lot @ ${res.order.entryPrice.toFixed(spec.decimals)}`,
+        detail: `${res.order.volume.toFixed(2)} Lot @ ${res.order.entryPrice.toFixed(targetSpec.decimals)}`,
         tone: res.order.side === 'BUY' ? 'emerald' : 'rose',
+      });
+    } else if (res.error) {
+      setAdvOrderError(res.error);
+      setTerminalTopBanner({
+        id: `${Date.now()}-err`,
+        title: `Order Rejected • ${targetSymbol}`,
+        detail: res.error,
+        tone: 'rose',
+      });
+    }
+  };
+
+  const handleChartPendingOrderAtPrice = (
+    orderSide: OrderSide,
+    targetPrice: number,
+    targetSymbol: SymbolCode = symbol
+  ) => {
+    const targetMarket = getMarketStatus(targetSymbol);
+    if (!targetMarket.isOpen) {
+      setTerminalTopBanner({
+        id: `${Date.now()}-closed`,
+        title: `Market Closed • ${targetSymbol}`,
+        detail: targetMarket.reason,
+        tone: 'rose',
+      });
+      pushNotification('Market Closed (Sat–Sun)', targetMarket.reason, 'warning');
+      return;
+    }
+
+    const targetSpec = INSTRUMENTS[targetSymbol] || spec;
+    const q = quotesRef.current[targetSymbol] || currentQuote;
+    const orderType = resolveChartPriceOrderType(orderSide, targetPrice, q.bid, q.ask);
+    const res = submitOrder({
+      accountId: effectiveAccount.id,
+      symbol: targetSymbol,
+      side: orderSide,
+      orderType,
+      volume: parsedVolume > 0 ? parsedVolume : 0.01,
+      entryPrice: targetPrice,
+    });
+    if (res.ok && res.order) {
+      setTerminalTopBanner({
+        id: res.order.id,
+        title: `${res.order.orderType.replace('_', ' ')} Placed • ${res.order.symbol}`,
+        detail: `${res.order.side} ${res.order.volume.toFixed(2)} Lot @ ${res.order.entryPrice.toFixed(targetSpec.decimals)}`,
+        tone: res.order.side === 'BUY' ? 'emerald' : 'rose',
+      });
+    } else if (res.error) {
+      setTerminalTopBanner({
+        id: `${Date.now()}-err`,
+        title: `Order Rejected • ${targetSymbol}`,
+        detail: res.error,
+        tone: 'rose',
       });
     }
   };
 
   const handleAdvOrder = () => {
+    setAdvOrderError(null);
+    const currentMarket = getMarketStatus(symbol);
+    if (!currentMarket.isOpen) {
+      setAdvOrderError(currentMarket.reason);
+      setTerminalTopBanner({
+        id: `${Date.now()}-closed`,
+        title: `Market Closed • ${symbol}`,
+        detail: currentMarket.reason,
+        tone: 'rose',
+      });
+      pushNotification('Market Closed (Sat–Sun)', currentMarket.reason, 'warning');
+      return;
+    }
+
     const entry = parseFloat(advEntryPrice) || undefined;
     const sl = parseFloat(advSl) || undefined;
     const tp = parseFloat(advTp) || undefined;
@@ -581,38 +691,54 @@ export const TradingTerminalView: React.FC = () => {
         tone: res.order.side === 'BUY' ? 'emerald' : 'rose',
       });
       setShowAdvancedOrderTicket(false);
+      setAdvOrderError(null);
       setAdvSl('');
       setAdvTp('');
       setAdvEntryPrice('');
+    } else if (res.error) {
+      setAdvOrderError(res.error);
     }
   };
 
   const handlePartialClose = (pos: TradeOrderRecord, ratio: number) => {
+    const posMarket = getMarketStatus(pos.symbol);
+    if (!posMarket.isOpen) {
+      setTerminalTopBanner({
+        id: `${Date.now()}-closed`,
+        title: `Market Closed • ${pos.symbol}`,
+        detail: posMarket.reason,
+        tone: 'rose',
+      });
+      pushNotification('Market Closed (Sat–Sun)', posMarket.reason, 'warning');
+      return;
+    }
+
     if (ratio >= 0.99 || pos.volume <= 0.01) {
       handleCloseWithBanner(pos.id);
       return;
     }
-    const closeVol = Math.max(0.01, Math.round(pos.volume * ratio * 100) / 100);
-    const remainVol = Math.max(0.01, Math.round((pos.volume - closeVol) * 100) / 100);
-    closePosition(pos.id);
+    const closeVolume = Math.max(0.01, Math.round(pos.volume * ratio * 100) / 100);
+    const remainVolume = Math.max(0.01, Math.round((pos.volume - closeVolume) * 100) / 100);
+    const closeRes = closePosition(pos.id);
+    if (!closeRes.ok) return;
     submitOrder({
       accountId: effectiveAccount.id,
       symbol: pos.symbol,
       side: pos.side,
       orderType: 'MARKET',
-      volume: remainVol,
+      volume: remainVolume,
       stopLoss: pos.stopLoss > 0 ? pos.stopLoss : undefined,
       takeProfit: pos.takeProfit > 0 ? pos.takeProfit : undefined,
     });
     setTerminalTopBanner({
       id: `${Date.now()}-partial`,
       title: `Partial Order Closed • ${pos.symbol}`,
-      detail: `Closed ${closeVol.toFixed(2)} Lot (${Math.round(ratio * 100)}%) • Open: ${remainVol.toFixed(2)} Lot`,
+      detail: `Closed ${closeVolume.toFixed(2)} Lot (${Math.round(ratio * 100)}%) • Open: ${remainVolume.toFixed(2)} Lot`,
       tone: 'aqua',
     });
     pushNotification(
       'Partial Close Executed',
-      `Closed ${closeVol.toFixed(2)} Lot of ${pos.symbol} (${Math.round(ratio * 100)}%). Remaining open: ${remainVol.toFixed(2)} Lot.`,
+      `Closed ${closeVolume.toFixed(2)} Lot of ${pos.symbol} (${Math.round(ratio * 100)}%). Remaining open: ${remainVolume.toFixed(2)} Lot.`,
       'info'
     );
   };
@@ -658,19 +784,86 @@ export const TradingTerminalView: React.FC = () => {
     Math.abs(currentQuote.ask - currentQuote.bid)
   );
 
+  const accountRulesSummary = useMemo(
+    () => formatAccountRulesSummary(effectiveAccount),
+    [effectiveAccount]
+  );
+
+  const currentLotMarginUsd = useMemo(
+    () =>
+      calculateRequiredMargin(
+        symbol,
+        parsedVolume > 0 ? parsedVolume : 0.01,
+        currentQuote.ask || spec.basePrice,
+        effectiveAccount.leverage || 100
+      ),
+    [symbol, parsedVolume, currentQuote.ask, spec.basePrice, effectiveAccount.leverage]
+  );
+
+  const maxAffordableLots = useMemo(() => {
+    const unitMargin = calculateRequiredMargin(
+      symbol,
+      1,
+      currentQuote.ask || spec.basePrice,
+      effectiveAccount.leverage || 100
+    );
+    if (unitMargin <= 0) return 50;
+    const rawMax = Math.floor(((riskMetrics.freeMargin * 0.95) / unitMargin) * 100) / 100;
+    return Math.max(0.01, Math.min(100, rawMax));
+  }, [symbol, currentQuote.ask, spec.basePrice, effectiveAccount.leverage, riskMetrics.freeMargin]);
+
+  const handleChartModifySlTp = (orderId: string, nextSl: number, nextTp: number) => {
+    const res = modifyOrder(orderId, {
+      stopLoss: nextSl,
+      takeProfit: nextTp,
+      allowAutoClamp: true,
+    });
+    if (res.ok) {
+      const slLabel = nextSl > 0 ? `SL ${nextSl.toFixed(spec.decimals)}` : 'SL OFF';
+      const tpLabel = nextTp > 0 ? `TP ${nextTp.toFixed(spec.decimals)}` : 'TP OFF';
+      setTerminalTopBanner({
+        id: `${Date.now()}-sltp`,
+        title: `Chart SL / TP Updated • ${symbol}`,
+        detail: `${slLabel} · ${tpLabel}`,
+        tone: 'aqua',
+      });
+    } else if (res.error) {
+      setTerminalTopBanner({
+        id: `${Date.now()}-sltp-err`,
+        title: `SL / TP Update Rejected`,
+        detail: res.error,
+        tone: 'rose',
+      });
+    }
+  };
+
   // Sync Balance, Equity, P&L, Max Drawdown (DD), and Profit Target (TARGET) with dirty-checking so DOM only mutates when values change
   useEffect(() => {
-    let rafId: number;
     let lastBalance = NaN;
     let lastEquity = NaN;
     let lastBid = NaN;
     let lastAsk = NaN;
+    let lastQuoteSig = '';
 
     const updateHeader = () => {
       if (!balanceRef.current || !equityRef.current || !effectiveAccount) {
-        rafId = requestAnimationFrame(updateHeader);
         return;
       }
+
+      const latestQuotes = quotesRef.current;
+      const symbolQuote = latestQuotes[symbol];
+      const primaryTs = symbolQuote?.timestamp || 0;
+      let openPosSig = '';
+      if (openPositions.length > 0) {
+        for (let i = 0; i < openPositions.length; i++) {
+          openPosSig += `${latestQuotes[openPositions[i].symbol]?.timestamp || 0},`;
+        }
+      }
+      const nextQuoteSig = `${effectiveAccount.balance}:${openPositions.length}:${primaryTs}:${openPosSig}`;
+      if (nextQuoteSig === lastQuoteSig) {
+        return;
+      }
+      lastQuoteSig = nextQuoteSig;
 
       if (effectiveAccount.balance !== lastBalance) {
         lastBalance = effectiveAccount.balance;
@@ -680,7 +873,6 @@ export const TradingTerminalView: React.FC = () => {
         })}`;
       }
 
-      const latestQuotes = quotesRef.current;
       let totalFloatingPnl = 0;
 
       for (let i = 0; i < openPositions.length; i++) {
@@ -763,7 +955,6 @@ export const TradingTerminalView: React.FC = () => {
         }
       }
 
-      const symbolQuote = latestQuotes[symbol];
       if (symbolQuote) {
         if (symbolQuote.bid !== lastBid && bidRef.current) {
           lastBid = symbolQuote.bid;
@@ -780,14 +971,15 @@ export const TradingTerminalView: React.FC = () => {
           });
         }
       }
-
-      rafId = requestAnimationFrame(updateHeader);
     };
-    rafId = requestAnimationFrame(updateHeader);
-    return () => cancelAnimationFrame(rafId);
+
+    updateHeader();
+    const timer = setInterval(updateHeader, 250);
+    return () => clearInterval(timer);
   }, [
     effectiveAccount,
     openPositions,
+    quotes,
     quotesRef,
     symbol,
     spec.decimals,
@@ -1078,9 +1270,21 @@ export const TradingTerminalView: React.FC = () => {
               <Maximize2 className="w-3.5 h-3.5" />
             </button>
 
-            <div className="px-2.5 py-0.5 rounded-full border border-[#00B87C]/65 bg-[#00B87C]/10 text-[#28D6B0] font-bold text-[10.5px] tracking-wide flex items-center gap-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#00B87C] animate-pulse" />
-              <span>LIVE</span>
+            <div
+              data-testid="terminal-market-status-badge"
+              title={marketStatus.reason}
+              className={`px-2.5 py-0.5 rounded-full border font-bold text-[10.5px] tracking-wide flex items-center gap-1 ${
+                marketStatus.isOpen
+                  ? 'border-[#00B87C]/65 bg-[#00B87C]/10 text-[#28D6B0]'
+                  : 'border-[#F23645]/65 bg-[#F23645]/10 text-[#F23645]'
+              }`}
+            >
+              <span
+                className={`w-1.5 h-1.5 rounded-full ${
+                  marketStatus.isOpen ? 'bg-[#00B87C] animate-pulse' : 'bg-[#F23645]'
+                }`}
+              />
+              <span>{marketStatus.sessionLabel}</span>
             </div>
 
             <button
@@ -1252,30 +1456,37 @@ export const TradingTerminalView: React.FC = () => {
 
       {/* 2. PROMINENT ROUNDED FAST EXECUTION STRIP (LARGER SELL | BUY | GOLD ▼) */}
       <section className="shrink-0 bg-[#090F0D] px-2.5 py-1.5 sm:px-4 select-none">
-        <div className="w-full grid grid-cols-12 gap-2 sm:gap-2.5 items-stretch">
+        <div className="w-full flex sm:grid sm:grid-cols-12 gap-1.5 sm:gap-2.5 items-stretch">
           {/* Prominent Crimson Rose SELL Button (#F01650) */}
           <button
             type="button"
             data-testid="terminal-sell-btn"
+            data-no-global-processing="true"
             onClick={() => handleQuickTrade('SELL')}
-            className={`col-span-5 bg-gradient-to-r from-[#F01650] to-[#E11D48] hover:brightness-110 active:scale-[0.985] transition-all rounded-[16px] py-2.5 sm:py-3.5 px-3 sm:px-4 flex items-center justify-between text-white shadow-[0_6px_20px_rgba(240,22,80,0.32)] border border-white/15 cursor-pointer ${
-              tickDirection === 'down' ? 'ring-1 ring-white/85 brightness-110' : ''
+            className={`flex-1 min-w-0 sm:col-span-5 bg-gradient-to-r from-[#F01650] to-[#E11D48] hover:brightness-110 active:scale-[0.985] transition-all rounded-[14px] sm:rounded-[16px] py-2 sm:py-3.5 px-2.5 sm:px-4 flex items-center justify-between text-white shadow-[0_6px_20px_rgba(240,22,80,0.32)] border border-white/15 cursor-pointer ${
+              !marketStatus.isOpen
+                ? 'opacity-70 grayscale-[20%]'
+                : tickDirection === 'down'
+                ? 'ring-1 ring-white/85 brightness-110'
+                : ''
             }`}
           >
             <div className="flex flex-col items-start leading-tight">
               <div className="flex items-center gap-1">
-                <span className="text-xs sm:text-sm font-black tracking-wider uppercase">
+                <span className="text-[11px] sm:text-sm font-black tracking-wider uppercase">
                   SELL
                 </span>
-                {tickDirection === 'down' && <span className="text-[10px] text-white">▼</span>}
+                <span className="w-2.5 text-center text-[10px] text-white">
+                  {marketStatus.isOpen && tickDirection === 'down' ? '▼' : ''}
+                </span>
               </div>
-              <span className="text-[9px] sm:text-[10px] font-semibold text-white/80 uppercase tracking-wider">
-                Market Bid
+              <span className="text-[8.5px] sm:text-[10px] font-semibold text-white/80 uppercase tracking-wider">
+                {marketStatus.isOpen ? 'Market Bid' : 'Market Closed'}
               </span>
             </div>
             <span
               ref={bidRef}
-              className="text-base sm:text-xl font-black tracking-tight tabular-nums leading-none"
+              className="text-[15px] sm:text-xl font-black tracking-tight tabular-nums leading-none"
             >
               {currentQuote.bid.toLocaleString('en-US', {
                 minimumFractionDigits: spec.decimals,
@@ -1288,25 +1499,32 @@ export const TradingTerminalView: React.FC = () => {
           <button
             type="button"
             data-testid="terminal-buy-btn"
+            data-no-global-processing="true"
             onClick={() => handleQuickTrade('BUY')}
-            className={`col-span-5 bg-gradient-to-r from-[#00B87C] to-[#12A982] hover:brightness-110 active:scale-[0.985] transition-all rounded-[16px] py-2.5 sm:py-3.5 px-3 sm:px-4 flex items-center justify-between text-white shadow-[0_6px_20px_rgba(0,184,124,0.32)] border border-white/15 cursor-pointer ${
-              tickDirection === 'up' ? 'ring-1 ring-white/85 brightness-110' : ''
+            className={`flex-1 min-w-0 sm:col-span-5 bg-gradient-to-r from-[#00B87C] to-[#12A982] hover:brightness-110 active:scale-[0.985] transition-all rounded-[14px] sm:rounded-[16px] py-2 sm:py-3.5 px-2.5 sm:px-4 flex items-center justify-between text-white shadow-[0_6px_20px_rgba(0,184,124,0.32)] border border-white/15 cursor-pointer ${
+              !marketStatus.isOpen
+                ? 'opacity-70 grayscale-[20%]'
+                : tickDirection === 'up'
+                ? 'ring-1 ring-white/85 brightness-110'
+                : ''
             }`}
           >
             <div className="flex flex-col items-start leading-tight">
               <div className="flex items-center gap-1">
-                <span className="text-xs sm:text-sm font-black tracking-wider uppercase">
+                <span className="text-[11px] sm:text-sm font-black tracking-wider uppercase">
                   BUY
                 </span>
-                {tickDirection === 'up' && <span className="text-[10px] text-white">▲</span>}
+                <span className="w-2.5 text-center text-[10px] text-white">
+                  {marketStatus.isOpen && tickDirection === 'up' ? '▲' : ''}
+                </span>
               </div>
-              <span className="text-[9px] sm:text-[10px] font-semibold text-white/80 uppercase tracking-wider">
-                Market Ask
+              <span className="text-[8.5px] sm:text-[10px] font-semibold text-white/80 uppercase tracking-wider">
+                {marketStatus.isOpen ? 'Market Ask' : 'Market Closed'}
               </span>
             </div>
             <span
               ref={askRef}
-              className="text-base sm:text-xl font-black tracking-tight tabular-nums leading-none"
+              className="text-[15px] sm:text-xl font-black tracking-tight tabular-nums leading-none"
             >
               {currentQuote.ask.toLocaleString('en-US', {
                 minimumFractionDigits: spec.decimals,
@@ -1320,9 +1538,9 @@ export const TradingTerminalView: React.FC = () => {
             type="button"
             data-testid="terminal-pair-selector-btn"
             onClick={() => setShowPairModal(true)}
-            className="col-span-2 bg-[#0C1411] hover:bg-[#121F1A] border border-white/15 active:scale-[0.99] transition-all rounded-[16px] py-2.5 sm:py-3.5 px-2 flex items-center justify-center gap-1 text-[#F4F8F6] font-extrabold text-xs sm:text-sm cursor-pointer"
+            className="shrink-0 sm:col-span-2 bg-[#0C1411] hover:bg-[#121F1A] border border-white/15 active:scale-[0.99] transition-all rounded-[14px] sm:rounded-[16px] py-2 sm:py-3.5 px-2.5 sm:px-2 flex items-center justify-center gap-1 text-[#F4F8F6] font-extrabold text-xs sm:text-sm cursor-pointer"
           >
-            <span className="truncate">{spec.shortName}</span>
+            <span className="whitespace-nowrap">{spec.shortName}</span>
             <span className="text-[10px] text-[#28D6B0]">▾</span>
           </button>
         </div>
@@ -1356,7 +1574,28 @@ export const TradingTerminalView: React.FC = () => {
             </div>
 
             {showLotDropdown && (
-              <div className="absolute left-0 top-9 z-40 bg-[#070C0A] border border-[#28D6B0]/30 rounded-[18px] p-3 w-48 shadow-2xl space-y-2">
+              <div className="absolute left-0 top-9 z-40 bg-[#070C0A] border border-[#28D6B0]/30 rounded-[18px] p-3 w-56 shadow-2xl space-y-2.5">
+                <div className="px-2 py-1.5 rounded-[10px] bg-[#0C1411] border border-white/10 text-[10px] space-y-1">
+                  <div className="flex items-center justify-between text-[#8B9A92]">
+                    <span>Req. Margin ({effectiveAccount.leverage}x)</span>
+                    <span className="font-mono font-bold text-[#28D6B0] tabular-nums">
+                      ${currentLotMarginUsd.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[#8B9A92]">
+                    <span>Max Lot Capacity</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setVolume(maxAffordableLots.toFixed(2));
+                        setShowLotDropdown(false);
+                      }}
+                      className="font-mono font-bold text-white hover:text-[#28D6B0] underline cursor-pointer tabular-nums"
+                    >
+                      {maxAffordableLots.toFixed(2)} Lot
+                    </button>
+                  </div>
+                </div>
                 <div className="flex items-center justify-between gap-1.5">
                   <button
                     type="button"
@@ -1398,10 +1637,15 @@ export const TradingTerminalView: React.FC = () => {
             )}
           </div>
 
-          {/* Middle: Compact DD Progress Column */}
-          <div data-testid="terminal-daily-dd-card" className="col-span-4 space-y-0.5">
+          {/* Middle: Compact DD Progress Column (Click to inspect Account & Challenge Rules) */}
+          <div
+            data-testid="terminal-daily-dd-card"
+            onClick={() => setShowAccountRulesModal(true)}
+            title="Click to inspect Daily & Max Drawdown Rules"
+            className="col-span-4 space-y-0.5 cursor-pointer group"
+          >
             <div className="flex items-center justify-between text-[10px] font-bold leading-none">
-              <span className="text-[#F01650]">DD</span>
+              <span className="text-[#F01650] group-hover:underline">DD</span>
               <span
                 ref={ddTextRef}
                 data-testid="terminal-dd-text"
@@ -1426,10 +1670,15 @@ export const TradingTerminalView: React.FC = () => {
             </div>
           </div>
 
-          {/* Right: Compact TARGET Progress Column */}
-          <div data-testid="terminal-profit-target-card" className="col-span-4 space-y-0.5">
+          {/* Right: Compact TARGET Progress Column (Click to inspect Account & Challenge Rules) */}
+          <div
+            data-testid="terminal-profit-target-card"
+            onClick={() => setShowAccountRulesModal(true)}
+            title="Click to inspect Challenge Profit Target & Phase Rules"
+            className="col-span-4 space-y-0.5 cursor-pointer group"
+          >
             <div className="flex items-center justify-between text-[10px] font-bold leading-none">
-              <span className="text-[#00B87C]">TARGET</span>
+              <span className="text-[#00B87C] group-hover:underline">TARGET</span>
               <span
                 ref={targetTextRef}
                 data-testid="terminal-target-text"
@@ -1462,8 +1711,8 @@ export const TradingTerminalView: React.FC = () => {
 
       {/* 4. COMPACT TIMEFRAME PILLS + CANDLE COUNTDOWN + LIVE SPOT PRICE + SL/TP ORDER BUTTON */}
       <section className="shrink-0 bg-[#090F0D] px-2.5 py-1 sm:px-4 border-b border-white/10 select-none">
-        <div className="w-full flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
-          <div className="flex items-center gap-1">
+        <div className="w-full flex flex-wrap sm:flex-nowrap items-center justify-between gap-x-2 gap-y-1">
+          <div className="flex items-center gap-0.5 sm:gap-1 overflow-x-auto no-scrollbar max-w-full">
             {displayedTimeframes.map((tf) => {
               const isActive = timeframe.label === tf.label;
               return (
@@ -1471,7 +1720,7 @@ export const TradingTerminalView: React.FC = () => {
                   key={tf.label}
                   type="button"
                   onClick={() => setTimeframe(tf)}
-                  className={`px-2.5 py-0.5 rounded-[9px] text-[11px] font-semibold transition-all cursor-pointer ${
+                  className={`px-2 sm:px-2.5 py-0.5 rounded-[9px] text-[11px] font-semibold transition-all cursor-pointer shrink-0 ${
                     isActive
                       ? 'bg-[#14221D] text-[#F4F8F6] border border-[#28D6B0]/35 font-bold shadow-sm'
                       : 'bg-transparent text-[#8B9A92] hover:text-[#F4F8F6]'
@@ -1485,43 +1734,72 @@ export const TradingTerminalView: React.FC = () => {
             <button
               type="button"
               onClick={() => setShowAllTimeframes((v) => !v)}
-              className="px-1.5 py-0.5 rounded-[8px] text-[10.5px] font-semibold text-[#8B9A92] hover:text-[#28D6B0] cursor-pointer"
+              className="px-1.5 py-0.5 rounded-[8px] text-[10.5px] font-semibold text-[#8B9A92] hover:text-[#28D6B0] cursor-pointer shrink-0"
               title="Show 1s, 3m, 2h, 1M timeframes"
             >
               {showAllTimeframes ? 'Less' : '+All'}
             </button>
-
-            <div className="ml-0.5 px-2.5 py-0.5 rounded-[9px] bg-[#0C1411] border border-white/15 text-[11px] font-bold text-[#F4F8F6] tabular-nums shrink-0">
-              {candleCountdown}
-            </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 text-[11px] font-semibold tabular-nums">
-            <span
-              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-[8px] font-bold transition-colors duration-150 ${
-                tickDirection === 'up'
+          <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto shrink-0 text-[11px] font-semibold tabular-nums">
+            <button
+              type="button"
+              data-testid="terminal-live-price-with-timer"
+              onClick={() => setChartFocusTrigger((prev) => prev + 1)}
+              title="Click to focus chart on current live price"
+              className={`inline-flex flex-col items-start sm:items-end justify-center min-w-[118px] whitespace-nowrap px-2 py-0.5 rounded-[8px] font-bold leading-tight transition-colors duration-150 cursor-pointer ${
+                !marketStatus.isOpen
+                  ? 'bg-[#F23645]/10 text-[#F23645]'
+                  : tickDirection === 'up'
                   ? 'bg-[#28D6B0]/20 text-[#28D6B0]'
                   : tickDirection === 'down'
                   ? 'bg-[#F01650]/20 text-[#F01650]'
                   : 'text-[#00B87C]'
               }`}
             >
-              <span>{spec.shortName}</span>
-              <span>
-                {liveMidPrice.toLocaleString('en-US', {
-                  minimumFractionDigits: spec.decimals,
-                  maximumFractionDigits: spec.decimals,
-                })}
+              <span className="inline-flex items-center gap-1">
+                <span>{spec.shortName}</span>
+                <span>
+                  {liveMidPrice.toLocaleString('en-US', {
+                    minimumFractionDigits: spec.decimals,
+                    maximumFractionDigits: spec.decimals,
+                  })}
+                </span>
+                <span className="text-[9px]">
+                  {!marketStatus.isOpen
+                    ? '•'
+                    : tickDirection === 'up'
+                    ? '▲'
+                    : tickDirection === 'down'
+                    ? '▼'
+                    : '•'}
+                </span>
               </span>
-              <span className="text-[9px]">
-                {tickDirection === 'up' ? '▲' : tickDirection === 'down' ? '▼' : '•'}
+              <span
+                data-testid="terminal-header-countdown"
+                className={`text-[9.5px] font-semibold tabular-nums leading-none mt-0.5 ${
+                  !marketStatus.isOpen ? 'text-[#F23645]' : 'text-[#D1D4DC] opacity-90'
+                }`}
+              >
+                {marketStatus.isOpen ? candleCountdown : 'CLOSED · Sun 22:00 UTC'}
               </span>
-            </span>
+            </button>
 
             <button
               type="button"
+              data-testid="terminal-account-rules-btn"
+              onClick={() => setShowAccountRulesModal(true)}
+              className="px-2 py-1 rounded-[8px] bg-[#0C1411] border border-white/15 text-[10.5px] font-bold text-[#D1D4DC] hover:border-[#28D6B0]/40 hover:text-[#28D6B0] cursor-pointer"
+              title="Inspect Active Account & Challenge Rules"
+            >
+              Rules
+            </button>
+
+            <button
+              type="button"
+              data-testid="terminal-sltp-order-btn"
               onClick={() => setShowAdvancedOrderTicket(true)}
-              className="px-2 py-0.5 rounded-[8px] bg-[#0C1411] border border-[#28D6B0]/25 text-[10.5px] font-bold text-[#28D6B0] hover:bg-[#121F1A] cursor-pointer"
+              className="px-2 py-1 rounded-[8px] bg-[#0C1411] border border-[#28D6B0]/25 text-[10.5px] font-bold text-[#28D6B0] hover:bg-[#121F1A] cursor-pointer"
             >
               +SL/TP Order
             </button>
@@ -1530,7 +1808,7 @@ export const TradingTerminalView: React.FC = () => {
       </section>
 
       {/* 5. MAIN WORKSPACE: LEFT WATCHLIST (XL+) + CENTER CHART(S) + RIGHT ORDER PANEL (2XL+) */}
-      <section className="flex-1 min-h-0 relative bg-[#080D0B] w-full overflow-hidden flex">
+      <section className="flex-1 min-h-0 relative bg-[#131722] w-full overflow-hidden flex">
         {/* Desktop Left Market Watch Sidebar */}
         <aside className="hidden xl:flex w-64 shrink-0 bg-[#090F0D] border-r border-white/10 flex-col select-none">
           <div className="p-3 border-b border-white/10 flex items-center justify-between">
@@ -1542,6 +1820,7 @@ export const TradingTerminalView: React.FC = () => {
           <div className="flex-1 overflow-y-auto custom-scrollbar divide-y divide-white/5">
             {allSymbols.map((sym) => {
               const itemSpec = INSTRUMENTS[sym];
+              const pairMarket = getMarketStatus(sym, marketClockMs);
               const q = quotes[sym] || { bid: itemSpec.basePrice, ask: itemSpec.basePrice + itemSpec.spread, change24hPct: 0 };
               const isSelected = symbol === sym;
               const isPos = q.change24hPct >= 0;
@@ -1550,7 +1829,8 @@ export const TradingTerminalView: React.FC = () => {
                 <button
                   key={sym}
                   type="button"
-                  onClick={() => setSymbol(sym)}
+                  data-testid={`watchlist-pair-${sym}`}
+                  onClick={() => handleSelectPair(sym)}
                   className={`w-full px-3.5 py-2.5 text-left flex items-center justify-between transition-colors cursor-pointer ${
                     isSelected
                       ? 'bg-[#0C1411] border-l-2 border-l-[#28D6B0]'
@@ -1560,8 +1840,22 @@ export const TradingTerminalView: React.FC = () => {
                   <div>
                     <div className="text-xs font-bold text-[#F4F8F6] flex items-center gap-1.5">
                       <span>{itemSpec.shortName}</span>
-                      <span className="text-[9px] px-1.5 py-0.2 rounded-[6px] bg-[#101B17] text-[#8B9A92]">
-                        {itemSpec.category === 'Commodities' ? 'GOLD' : itemSpec.category}
+                      <span
+                        className={`text-[9px] px-1.5 py-0.2 rounded-[6px] font-bold ${
+                          !pairMarket.isOpen
+                            ? 'bg-[#F23645]/15 text-[#F23645]'
+                            : pairMarket.sessionLabel === '24/7 LIVE'
+                            ? 'bg-[#089981]/20 text-[#28D6B0]'
+                            : 'bg-[#101B17] text-[#8B9A92]'
+                        }`}
+                      >
+                        {!pairMarket.isOpen
+                          ? 'CLOSED'
+                          : pairMarket.sessionLabel === '24/7 LIVE'
+                          ? '24/7'
+                          : itemSpec.category === 'Commodities'
+                          ? 'GOLD'
+                          : itemSpec.category}
                       </span>
                     </div>
                     <div className="text-[10px] text-[#8B9A92] truncate max-w-[115px]">{itemSpec.name}</div>
@@ -1569,12 +1863,14 @@ export const TradingTerminalView: React.FC = () => {
                   <div className="text-right">
                     <div
                       className={`text-xs font-bold tabular-nums inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[7px] transition-colors duration-200 ${
-                        symDir === 'up'
+                        !pairMarket.isOpen
+                          ? 'text-[#787B86] bg-white/5'
+                          : symDir === 'up'
                           ? 'text-[#28D6B0] bg-[#28D6B0]/12'
                           : 'text-[#F01650] bg-[#F01650]/12'
                       }`}
                     >
-                      <span className="text-[8px]">{symDir === 'up' ? '▲' : '▼'}</span>
+                      <span className="text-[8px]">{pairMarket.isOpen ? (symDir === 'up' ? '▲' : '▼') : '•'}</span>
                       <span>{q.bid.toFixed(itemSpec.decimals)}</span>
                     </div>
                     <div className={`text-[10px] font-semibold tabular-nums mt-0.5 ${isPos ? 'text-[#28D6B0]' : 'text-[#F01650]'}`}>
@@ -1594,81 +1890,104 @@ export const TradingTerminalView: React.FC = () => {
           }`}
         >
           {terminalTopBanner && (
-            <div
-              key={terminalTopBanner.id}
-              data-testid="terminal-top-1s-banner"
-              className={`pointer-events-none absolute top-2.5 left-1/2 -translate-x-1/2 z-40 w-[92vw] sm:w-[48vw] max-w-[540px] rounded-[16px] px-4 py-2.5 border shadow-[0_14px_38px_rgba(0,0,0,0.75)] backdrop-blur-md flex items-center justify-between gap-3 apex-terminal-1s-banner ${
-                terminalTopBanner.tone === 'emerald'
-                  ? 'bg-[#061812]/95 border-[#00B87C]/65 text-white'
-                  : terminalTopBanner.tone === 'rose'
-                  ? 'bg-[#1A070D]/95 border-[#F01650]/65 text-white'
-                  : 'bg-[#071512]/95 border-[#28D6B0]/65 text-white'
-              }`}
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span
-                  className={`w-3 h-3 rounded-full shrink-0 ${
-                    terminalTopBanner.tone === 'emerald'
-                      ? 'bg-[#00B87C] shadow-[0_0_10px_#00B87C]'
-                      : terminalTopBanner.tone === 'rose'
-                      ? 'bg-[#F01650] shadow-[0_0_10px_#F01650]'
-                      : 'bg-[#28D6B0] shadow-[0_0_10px_#28D6B0]'
-                  }`}
-                />
-                <div className="min-w-0">
-                  <div className="text-xs sm:text-sm font-extrabold tracking-tight truncate">
-                    {terminalTopBanner.title}
-                  </div>
-                  {terminalTopBanner.detail && (
-                    <div className="text-[11px] font-semibold text-[#A5B5AE] truncate tabular-nums">
-                      {terminalTopBanner.detail}
+            <div className="pointer-events-none fixed top-2.5 inset-x-2.5 sm:inset-x-4 z-[70] flex justify-center">
+              <div
+                key={terminalTopBanner.id}
+                data-testid="terminal-top-1s-banner"
+                className={`pointer-events-auto w-full max-w-[500px] rounded-[14px] px-3.5 py-2.5 border shadow-[0_14px_38px_rgba(0,0,0,0.85)] flex items-start justify-between gap-2.5 apex-terminal-1s-banner ${
+                  terminalTopBanner.tone === 'emerald'
+                    ? 'bg-[#061812] border-[#00B87C]/70 text-white'
+                    : terminalTopBanner.tone === 'rose'
+                    ? 'bg-[#1A070D] border-[#F01650]/70 text-white'
+                    : 'bg-[#071512] border-[#28D6B0]/70 text-white'
+                }`}
+              >
+                <div className="flex items-start gap-2.5 min-w-0 flex-1">
+                  <span
+                    className={`w-2.5 h-2.5 mt-1 rounded-full shrink-0 ${
+                      terminalTopBanner.tone === 'emerald'
+                        ? 'bg-[#00B87C] shadow-[0_0_10px_#00B87C]'
+                        : terminalTopBanner.tone === 'rose'
+                        ? 'bg-[#F01650] shadow-[0_0_10px_#F01650]'
+                        : 'bg-[#28D6B0] shadow-[0_0_10px_#28D6B0]'
+                    }`}
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs sm:text-sm font-extrabold tracking-tight leading-snug break-words">
+                      {terminalTopBanner.title}
                     </div>
-                  )}
+                    {terminalTopBanner.detail && (
+                      <div className="text-[11px] font-semibold text-[#C8D8D1] leading-snug break-words tabular-nums mt-0.5">
+                        {terminalTopBanner.detail}
+                      </div>
+                    )}
+                  </div>
                 </div>
+                <button
+                  type="button"
+                  aria-label="Dismiss terminal message"
+                  onClick={() => setTerminalTopBanner(null)}
+                  className="text-[#8B9A92] hover:text-white p-1 rounded-md hover:bg-white/10 transition-colors cursor-pointer shrink-0"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
               </div>
-              <span className="text-[10px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full bg-white/10 text-[#28D6B0] shrink-0">
-                LIVE
-              </span>
             </div>
           )}
 
           <div className="w-full h-full relative">
-            <ApexLiveCandlestickChart
+            <TradingTerminalChart
               symbol={symbol}
               timeframeLabel={timeframe.label}
               timeframeSeconds={timeframe.seconds}
+              candleCountdown={candleCountdown}
               currentBid={currentQuote.bid}
               currentAsk={currentQuote.ask}
+              focusTrigger={chartFocusTrigger}
               chartType={chartType}
               onChartTypeChange={setChartType}
+              tradeVolume={volume}
+              onTradeVolumeChange={setVolume}
+              onExecuteMarketOrder={(side, sym) => handleQuickTrade(side, sym)}
+              onPlacePendingOrderAtPrice={(side, price, sym) =>
+                handleChartPendingOrderAtPrice(side, price, sym)
+              }
               openPositions={currentSymbolPositions}
               pendingOrders={pendingOrders.filter((o) => o.symbol === symbol)}
               onClosePosition={handleCloseWithBanner}
               onCancelPendingOrder={cancelPendingOrder}
-              onModifyPositionSlTp={(orderId, sl, tp) =>
-                modifyOrder(orderId, { stopLoss: sl, takeProfit: tp })
-              }
+              onModifyPositionSlTp={handleChartModifySlTp}
               onEditPositionModal={(pos) => {
                 setEditingOrder(pos);
+                setEditOrderError(null);
                 setEditSl(pos.stopLoss ? String(pos.stopLoss) : '');
                 setEditTp(pos.takeProfit ? String(pos.takeProfit) : '');
+                setEditEntry(pos.status === 'PENDING' ? String(pos.entryPrice) : '');
               }}
               onQuickCreateAlert={(price) => {
                 setNewAlertPrice(price.toFixed(spec.decimals));
                 setNewAlertCondition(price >= currentQuote.bid ? 'ABOVE' : 'BELOW');
                 setShowAlertsModal(true);
               }}
+              draftSl={parseFloat(advSl) || 0}
+              draftTp={parseFloat(advTp) || 0}
+              draftSide={advSide}
+              draftEntryPrice={parseFloat(advEntryPrice) || 0}
+              draftLots={parsedVolume > 0 ? parsedVolume : 0.01}
             />
           </div>
 
           {splitChartLayout === 'dual' && (
             <div className="w-full h-full relative">
-              <div className="absolute bottom-8 left-3 z-20">
+              <div className="absolute top-11 right-2.5 z-20">
                 <select
                   aria-label="Secondary Chart Symbol"
                   value={secondarySymbol}
-                  onChange={(e) => setSecondarySymbol(e.target.value as SymbolCode)}
-                  className="px-2.5 py-1 rounded-[10px] bg-[#0C1411]/90 border border-[#28D6B0]/30 text-xs font-bold text-[#28D6B0] outline-none cursor-pointer"
+                  onChange={(e) => {
+                    setSecondarySymbol(e.target.value as SymbolCode);
+                    setChartFocusTrigger((prev) => prev + 1);
+                  }}
+                  className="px-2.5 py-1 rounded-[8px] bg-[#080D0B]/95 border border-white/15 text-xs font-bold text-[#D1D4DC] outline-none cursor-pointer shadow-lg"
                 >
                   {allSymbols.map((s) => (
                     <option key={s} value={s}>
@@ -1677,16 +1996,29 @@ export const TradingTerminalView: React.FC = () => {
                   ))}
                 </select>
               </div>
-              <ApexLiveCandlestickChart
+              <TradingTerminalChart
                 symbol={secondarySymbol}
                 timeframeLabel={timeframe.label}
                 timeframeSeconds={timeframe.seconds}
+                candleCountdown={candleCountdown}
                 currentBid={secondaryQuote.bid}
                 currentAsk={secondaryQuote.ask}
+                focusTrigger={chartFocusTrigger}
                 chartType={chartType}
                 showDrawingToolbar={false}
+                tradeVolume={volume}
+                onTradeVolumeChange={setVolume}
+                onExecuteMarketOrder={(side, sym) => handleQuickTrade(side, sym)}
+                onPlacePendingOrderAtPrice={(side, price, sym) =>
+                  handleChartPendingOrderAtPrice(side, price, sym)
+                }
                 openPositions={openPositions.filter((p) => p.symbol === secondarySymbol)}
+                pendingOrders={pendingOrders.filter((o) => o.symbol === secondarySymbol)}
                 onClosePosition={handleCloseWithBanner}
+                onCancelPendingOrder={cancelPendingOrder}
+                onModifyPositionSlTp={(orderId, sl, tp) =>
+                  modifyOrder(orderId, { stopLoss: sl, takeProfit: tp, allowAutoClamp: true })
+                }
               />
             </div>
           )}
@@ -1854,7 +2186,10 @@ export const TradingTerminalView: React.FC = () => {
           <button
             type="button"
             data-testid="terminal-bottom-charts"
-            onClick={() => setShowPositionsDrawer(false)}
+            onClick={() => {
+              setShowPositionsDrawer(false);
+              setChartFocusTrigger((prev) => prev + 1);
+            }}
             className="flex flex-col items-center gap-0.5 text-[#28D6B0] transition-colors cursor-pointer py-0.5"
           >
             <Activity className="w-5 h-5" />
@@ -1882,8 +2217,8 @@ export const TradingTerminalView: React.FC = () => {
 
       {/* 7. ALL PAIRS SELECTOR MODAL */}
       {showPairModal && (
-        <div className="fixed inset-0 z-50 bg-[#050807]/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5">
-          <div className="w-full max-w-2xl bg-[#070C0A] border border-[#28D6B0]/25 rounded-[22px] p-5 sm:p-6 space-y-4 shadow-2xl max-h-[85vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-[#050807]/90 apex-backdrop-enter flex items-center justify-center p-3 sm:p-5">
+          <div className="w-full max-w-2xl bg-[#070C0A] border border-[#28D6B0]/25 rounded-[22px] p-5 sm:p-6 space-y-4 shadow-2xl max-h-[85vh] flex flex-col apex-scale-in">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div>
                 <h3 className="font-display text-base sm:text-lg font-bold text-white flex items-center gap-2">
@@ -1936,6 +2271,7 @@ export const TradingTerminalView: React.FC = () => {
             <div className="flex-1 overflow-y-auto space-y-2 pr-1 custom-scrollbar">
               {filteredSymbols.map((sym) => {
                 const itemSpec = INSTRUMENTS[sym];
+                const pairMarket = getMarketStatus(sym, marketClockMs);
                 const q = quotes[sym] || {
                   bid: itemSpec.basePrice,
                   ask: itemSpec.basePrice + itemSpec.spread,
@@ -1950,10 +2286,7 @@ export const TradingTerminalView: React.FC = () => {
                     key={sym}
                     type="button"
                     data-testid={`pair-item-${sym}`}
-                    onClick={() => {
-                      setSymbol(sym);
-                      setShowPairModal(false);
-                    }}
+                    onClick={() => handleSelectPair(sym)}
                     className={`w-full p-3.5 rounded-[16px] border text-left transition-all cursor-pointer flex items-center justify-between gap-3 ${
                       isSelected
                         ? 'bg-[#101B17] border-[#28D6B0]'
@@ -1973,6 +2306,17 @@ export const TradingTerminalView: React.FC = () => {
                           <span className="text-[10px] px-2 py-0.5 rounded-full bg-[#080D0B] text-[#8B9A92] font-semibold">
                             {itemSpec.category}
                           </span>
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
+                              !pairMarket.isOpen
+                                ? 'bg-[#F23645]/15 text-[#F23645]'
+                                : pairMarket.sessionLabel === '24/7 LIVE'
+                                ? 'bg-[#089981]/20 text-[#28D6B0]'
+                                : 'bg-[#089981]/15 text-[#28D6B0]'
+                            }`}
+                          >
+                            {pairMarket.sessionLabel}
+                          </span>
                         </div>
                         <div className="text-[11px] text-[#8B9A92]">{itemSpec.name}</div>
                       </div>
@@ -1981,12 +2325,14 @@ export const TradingTerminalView: React.FC = () => {
                     <div className="text-right">
                       <div
                         className={`text-sm font-bold tabular-nums inline-flex items-center gap-1 px-2 py-0.5 rounded-[8px] transition-colors duration-200 ${
-                          symDir === 'up'
+                          !pairMarket.isOpen
+                            ? 'text-[#787B86] bg-white/5'
+                            : symDir === 'up'
                             ? 'text-[#28D6B0] bg-[#28D6B0]/14'
                             : 'text-[#F01650] bg-[#F01650]/14'
                         }`}
                       >
-                        <span className="text-[9px]">{symDir === 'up' ? '▲' : '▼'}</span>
+                        <span className="text-[9px]">{pairMarket.isOpen ? (symDir === 'up' ? '▲' : '▼') : '•'}</span>
                         <span>{q.bid.toFixed(itemSpec.decimals)}</span>
                       </div>
                       <div className="flex items-center justify-end gap-1.5 text-[11px] mt-0.5">
@@ -2013,8 +2359,8 @@ export const TradingTerminalView: React.FC = () => {
 
       {/* 8. POSITIONS, PENDING ORDERS & TRADING HISTORY BLOTTER DRAWER */}
       {showPositionsDrawer && (
-        <div className="fixed inset-0 z-50 bg-[#050807]/80 backdrop-blur-sm flex items-end sm:items-center justify-center">
-          <div className="w-full sm:max-w-4xl bg-[#070C0A] border-t sm:border border-[#28D6B0]/25 rounded-t-[24px] sm:rounded-[24px] p-5 sm:p-6 space-y-4 shadow-2xl max-h-[85vh] flex flex-col">
+        <div className="fixed inset-0 z-50 bg-[#050807]/88 apex-backdrop-enter flex items-end sm:items-center justify-center">
+          <div className="w-full sm:max-w-4xl bg-[#070C0A] border-t sm:border border-[#28D6B0]/25 rounded-t-[24px] sm:rounded-[24px] p-5 sm:p-6 space-y-4 shadow-2xl max-h-[85vh] flex flex-col apex-sheet-up sm:apex-scale-in">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <div className="flex items-center gap-3">
                 <h3 className="font-display text-base sm:text-lg font-bold text-white">
@@ -2147,8 +2493,10 @@ export const TradingTerminalView: React.FC = () => {
                             type="button"
                             onClick={() => {
                               setEditingOrder(pos);
+                              setEditOrderError(null);
                               setEditSl(pos.stopLoss ? String(pos.stopLoss) : '');
                               setEditTp(pos.takeProfit ? String(pos.takeProfit) : '');
+                              setEditEntry('');
                             }}
                             className="px-2.5 py-1.5 rounded-[10px] bg-[#080D0B] border border-white/15 text-[#A5B5AE] hover:text-white font-bold cursor-pointer"
                           >
@@ -2189,21 +2537,39 @@ export const TradingTerminalView: React.FC = () => {
                     {pendingOrders.map((ord) => (
                       <div
                         key={ord.id}
-                        className="p-4 rounded-[16px] bg-[#0C1411] border border-white/10 flex items-center justify-between text-xs"
+                        className="p-4 rounded-[16px] bg-[#0C1411] border border-white/10 flex flex-wrap items-center justify-between gap-2 text-xs"
                       >
                         <div>
                           <span className="font-bold text-white">
                             {ord.symbol} · {ord.orderType} {ord.side} ({ord.volume} Lot)
                           </span>
-                          <div className="text-[#A5B5AE] tabular-nums">Trigger @ {ord.entryPrice}</div>
+                          <div className="text-[#A5B5AE] tabular-nums">
+                            Trigger @ {ord.entryPrice} · SL: {ord.stopLoss > 0 ? ord.stopLoss : 'None'} · TP:{' '}
+                            {ord.takeProfit > 0 ? ord.takeProfit : 'None'}
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => cancelPendingOrder(ord.id)}
-                          className="px-3.5 py-1.5 rounded-[10px] bg-[#F01650]/20 text-[#F01650] font-bold cursor-pointer"
-                        >
-                          Cancel
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingOrder(ord);
+                              setEditOrderError(null);
+                              setEditSl(ord.stopLoss ? String(ord.stopLoss) : '');
+                              setEditTp(ord.takeProfit ? String(ord.takeProfit) : '');
+                              setEditEntry(String(ord.entryPrice));
+                            }}
+                            className="px-2.5 py-1.5 rounded-[10px] bg-[#080D0B] border border-white/15 text-[#A5B5AE] hover:text-white font-bold cursor-pointer"
+                          >
+                            Edit SL/TP
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => cancelPendingOrder(ord.id)}
+                            className="px-3.5 py-1.5 rounded-[10px] bg-[#F01650]/20 text-[#F01650] font-bold cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -2245,217 +2611,528 @@ export const TradingTerminalView: React.FC = () => {
         </div>
       )}
 
-      {/* 9. MODIFY SL/TP MODAL */}
-      {editingOrder && (
-        <div className="fixed inset-0 z-50 bg-[#050807]/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-[#070C0A] border border-[#28D6B0]/30 rounded-[22px] p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="font-display text-base font-bold text-white">
-                Modify Stop Loss / Take Profit ({editingOrder.symbol})
-              </h3>
-              <button
-                type="button"
-                onClick={() => setEditingOrder(null)}
-                className="text-[#8B9A92] hover:text-white cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {/* 9. MODIFY SL/TP MODAL (With Risk/Reward Calculator, Presets & Mobile Viewport Fit) */}
+      {editingOrder && (() => {
+        const orderSpec = INSTRUMENTS[editingOrder.symbol] || spec;
+        const orderQuote = quotes[editingOrder.symbol] || currentQuote;
+        const refEntry =
+          editingOrder.status === 'PENDING' && editEntry && Number.isFinite(parseFloat(editEntry))
+            ? parseFloat(editEntry)
+            : editingOrder.entryPrice;
+        const parsedSlNum = editSl.trim() ? parseFloat(editSl) : 0;
+        const parsedTpNum = editTp.trim() ? parseFloat(editTp) : 0;
+        const preview = validateAndComputeSlTpPreview({
+          symbol: editingOrder.symbol,
+          side: editingOrder.side,
+          volume: editingOrder.volume,
+          referencePrice: refEntry,
+          liveBid: orderQuote.bid,
+          liveAsk: orderQuote.ask,
+          stopLoss: Number.isFinite(parsedSlNum) ? parsedSlNum : 0,
+          takeProfit: Number.isFinite(parsedTpNum) ? parsedTpNum : 0,
+          isOpenPosition: editingOrder.status === 'OPEN',
+          allowAutoClamp: false,
+        });
+        const presets = computeSlTpPresets({
+          symbol: editingOrder.symbol,
+          side: editingOrder.side,
+          volume: editingOrder.volume,
+          entryPrice: refEntry,
+          liveBid: orderQuote.bid,
+          liveAsk: orderQuote.ask,
+          currentSl: Number.isFinite(parsedSlNum) && parsedSlNum > 0 ? parsedSlNum : undefined,
+          isOpenPosition: editingOrder.status === 'OPEN',
+        });
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-[#A5B5AE]">Stop Loss (SL)</label>
-                  {editSl && (
+        const isSlProfitLocked =
+          editingOrder.status === 'OPEN' &&
+          Number.isFinite(parsedSlNum) &&
+          parsedSlNum > 0 &&
+          ((editingOrder.side === 'BUY' && parsedSlNum >= editingOrder.entryPrice) ||
+            (editingOrder.side === 'SELL' && parsedSlNum <= editingOrder.entryPrice));
+        const slProfitLockUsd =
+          isSlProfitLocked
+            ? Math.max(
+                0,
+                (editingOrder.side === 'BUY'
+                  ? parsedSlNum - editingOrder.entryPrice
+                  : editingOrder.entryPrice - parsedSlNum) *
+                  orderSpec.contractSize *
+                  editingOrder.volume
+              )
+            : 0;
+
+        return (
+          <div className="fixed inset-0 z-[60] bg-[#050807]/90 apex-backdrop-enter flex items-center justify-center p-3 sm:p-4">
+            <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto custom-scrollbar bg-[#070C0A] border border-[#28D6B0]/35 rounded-[20px] p-4 sm:p-6 space-y-4 shadow-2xl apex-scale-in">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <div>
+                  <h3 className="font-display text-sm sm:text-base font-bold text-white">
+                    Modify SL / TP ({editingOrder.symbol})
+                  </h3>
+                  <div className="text-[11px] font-mono text-[#A5B5AE] tabular-nums mt-0.5">
+                    {editingOrder.side} {editingOrder.volume.toFixed(2)}L · Entry{' '}
+                    {editingOrder.entryPrice.toFixed(orderSpec.decimals)} · Bid{' '}
+                    {orderQuote.bid.toFixed(orderSpec.decimals)}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingOrder(null);
+                    setEditOrderError(null);
+                  }}
+                  className="text-[#8B9A92] hover:text-white cursor-pointer p-1"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {(editOrderError || (!preview.valid && preview.error)) && (
+                <div
+                  data-testid="sltp-modal-error"
+                  className="p-2.5 rounded-[12px] bg-[#F01650]/15 border border-[#F01650]/45 text-xs font-semibold text-rose-200 leading-snug break-words"
+                >
+                  {editOrderError || preview.error}
+                </div>
+              )}
+
+              {editingOrder.status === 'PENDING' && (
+                <div>
+                  <label className="block text-xs font-medium text-[#A5B5AE] mb-1">
+                    Pending Trigger Price
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={editEntry}
+                    onChange={(e) => {
+                      setEditEntry(e.target.value);
+                      setEditOrderError(null);
+                    }}
+                    className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white tabular-nums"
+                  />
+                </div>
+              )}
+
+              {/* Quick SL & R:R Presets */}
+              <div className="space-y-1.5">
+                <div className="text-[10px] font-mono uppercase tracking-wider text-[#8B9A92]">
+                  Quick Protection &amp; Risk:Reward Presets
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {presets.breakevenSl && (
                     <button
                       type="button"
-                      onClick={() => setEditSl('')}
-                      className="text-[10px] font-bold text-[#F01650] hover:underline cursor-pointer"
+                      onClick={() => {
+                        setEditSl(presets.breakevenSl!.toFixed(orderSpec.decimals));
+                        setEditOrderError(null);
+                      }}
+                      className="px-2.5 py-1 rounded-[8px] bg-[#28D6B0]/15 hover:bg-[#28D6B0]/25 border border-[#28D6B0]/40 text-[11px] font-bold text-[#28D6B0] cursor-pointer"
                     >
-                      Clear SL
+                      Breakeven
                     </button>
                   )}
-                </div>
-                <input
-                  type="number"
-                  step="any"
-                  value={editSl}
-                  onChange={(e) => setEditSl(e.target.value)}
-                  placeholder="None (0)"
-                  className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white"
-                />
-              </div>
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-medium text-[#A5B5AE]">Take Profit (TP)</label>
-                  {editTp && (
+                  {presets.riskUsdPresets.map((rp) => (
                     <button
+                      key={rp.riskUsd}
                       type="button"
-                      onClick={() => setEditTp('')}
-                      className="text-[10px] font-bold text-[#F01650] hover:underline cursor-pointer"
+                      onClick={() => {
+                        setEditSl(rp.slPrice.toFixed(orderSpec.decimals));
+                        setEditOrderError(null);
+                      }}
+                      className="px-2.5 py-1 rounded-[8px] bg-[#0C1411] hover:bg-[#14221D] border border-[#F01650]/35 text-[11px] font-bold text-rose-300 cursor-pointer"
                     >
-                      Clear TP
+                      SL -${rp.riskUsd}
                     </button>
-                  )}
+                  ))}
+                  {presets.rrPresets.map((rr) => (
+                    <button
+                      key={rr.ratio}
+                      type="button"
+                      onClick={() => {
+                        if (!editSl.trim()) {
+                          setEditSl(rr.slPrice.toFixed(orderSpec.decimals));
+                        }
+                        setEditTp(rr.tpPrice.toFixed(orderSpec.decimals));
+                        setEditOrderError(null);
+                      }}
+                      className="px-2.5 py-1 rounded-[8px] bg-[#0C1411] hover:bg-[#14221D] border border-[#28D6B0]/35 text-[11px] font-bold text-[#28D6B0] cursor-pointer"
+                    >
+                      TP {rr.label}
+                    </button>
+                  ))}
                 </div>
-                <input
-                  type="number"
-                  step="any"
-                  value={editTp}
-                  onChange={(e) => setEditTp(e.target.value)}
-                  placeholder="None (0)"
-                  className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white"
-                />
               </div>
-            </div>
 
-            <div className="flex items-center justify-between gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => {
-                  modifyOrder(editingOrder.id, {
-                    stopLoss: 0,
-                    takeProfit: 0,
-                  });
-                  setEditingOrder(null);
-                }}
-                className="px-4 py-2.5 rounded-[12px] bg-[#F01650]/15 hover:bg-[#F01650] border border-[#F01650]/40 text-red-300 hover:text-white font-bold text-xs cursor-pointer transition-colors"
-              >
-                Remove Both SL &amp; TP
-              </button>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-medium text-[#A5B5AE]">Stop Loss (SL)</label>
+                    {editSl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditSl('');
+                          setEditOrderError(null);
+                        }}
+                        className="text-[10px] font-bold text-[#F01650] hover:underline cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    data-testid="edit-sl-input"
+                    type="number"
+                    step="any"
+                    value={editSl}
+                    onChange={(e) => {
+                      setEditSl(e.target.value);
+                      setEditOrderError(null);
+                    }}
+                    placeholder="None (0)"
+                    className="w-full px-3 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white tabular-nums"
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-medium text-[#A5B5AE]">Take Profit (TP)</label>
+                    {editTp && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditTp('');
+                          setEditOrderError(null);
+                        }}
+                        className="text-[10px] font-bold text-[#F01650] hover:underline cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    data-testid="edit-tp-input"
+                    type="number"
+                    step="any"
+                    value={editTp}
+                    onChange={(e) => {
+                      setEditTp(e.target.value);
+                      setEditOrderError(null);
+                    }}
+                    placeholder="None (0)"
+                    className="w-full px-3 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white tabular-nums"
+                  />
+                </div>
+              </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  modifyOrder(editingOrder.id, {
-                    stopLoss: editSl ? parseFloat(editSl) : 0,
-                    takeProfit: editTp ? parseFloat(editTp) : 0,
-                    entryPrice: editEntry ? parseFloat(editEntry) : undefined,
-                  });
-                  setEditingOrder(null);
-                }}
-                className="px-5 py-2.5 rounded-[12px] apex-glow-btn text-xs cursor-pointer"
-              >
-                Save Changes
-              </button>
+              {/* Live Risk / Reward Readout */}
+              <div className="grid grid-cols-3 gap-2 p-2.5 rounded-[12px] bg-[#0C1411] border border-white/10 text-center">
+                <div>
+                  <div className="text-[10px] text-[#8B9A92]">
+                    {isSlProfitLocked ? 'SL Profit Lock' : 'Est. SL Risk'}
+                  </div>
+                  <div
+                    className={`text-xs font-extrabold tabular-nums ${
+                      isSlProfitLocked ? 'text-[#28D6B0]' : 'text-[#F01650]'
+                    }`}
+                  >
+                    {isSlProfitLocked
+                      ? `+$${slProfitLockUsd.toFixed(2)}`
+                      : preview.riskUsd > 0
+                      ? `-$${preview.riskUsd.toFixed(2)}`
+                      : 'OFF'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#8B9A92]">R:R Ratio</div>
+                  <div className="text-xs font-extrabold text-white tabular-nums">
+                    {preview.rrRatio ? `1 : ${preview.rrRatio}` : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#8B9A92]">Est. TP Target</div>
+                  <div className="text-xs font-extrabold text-[#28D6B0] tabular-nums">
+                    {preview.rewardUsd > 0 ? `+$${preview.rewardUsd.toFixed(2)}` : 'OFF'}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const res = modifyOrder(editingOrder.id, {
+                      stopLoss: 0,
+                      takeProfit: 0,
+                    });
+                    if (res.ok) {
+                      setEditingOrder(null);
+                      setEditOrderError(null);
+                    } else if (res.error) {
+                      setEditOrderError(res.error);
+                    }
+                  }}
+                  className="px-3.5 py-2.5 rounded-[12px] bg-[#F01650]/15 hover:bg-[#F01650] border border-[#F01650]/40 text-red-300 hover:text-white font-bold text-xs cursor-pointer transition-colors"
+                >
+                  Remove Both SL &amp; TP
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="save-sltp-btn"
+                  onClick={() => {
+                    const res = modifyOrder(editingOrder.id, {
+                      stopLoss: editSl.trim() ? parseFloat(editSl) : 0,
+                      takeProfit: editTp.trim() ? parseFloat(editTp) : 0,
+                      entryPrice: editEntry.trim() ? parseFloat(editEntry) : undefined,
+                    });
+                    if (res.ok) {
+                      setEditingOrder(null);
+                      setEditOrderError(null);
+                    } else if (res.error) {
+                      setEditOrderError(res.error);
+                    }
+                  }}
+                  className="px-5 py-2.5 rounded-[12px] apex-glow-btn text-xs cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 10. ADVANCED ORDER TICKET MODAL */}
-      {showAdvancedOrderTicket && (
-        <div className="fixed inset-0 z-50 bg-[#050807]/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-[#070C0A] border border-[#28D6B0]/30 rounded-[22px] p-6 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="font-display text-base font-bold text-white">
-                Advanced Order Ticket ({symbol})
-              </h3>
-              <button
-                type="button"
-                onClick={() => setShowAdvancedOrderTicket(false)}
-                className="text-[#8B9A92] hover:text-white cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
+      {showAdvancedOrderTicket && (() => {
+        const refEntry =
+          advOrderType === 'MARKET'
+            ? advSide === 'BUY'
+              ? currentQuote.ask
+              : currentQuote.bid
+            : parseFloat(advEntryPrice) || (advSide === 'BUY' ? currentQuote.ask : currentQuote.bid);
+        const advVol = parsedVolume > 0 ? parsedVolume : 0.01;
+        const advPreview = validateAndComputeSlTpPreview({
+          symbol,
+          side: advSide,
+          volume: advVol,
+          referencePrice: refEntry,
+          liveBid: currentQuote.bid,
+          liveAsk: currentQuote.ask,
+          stopLoss: advSl.trim() ? parseFloat(advSl) : 0,
+          takeProfit: advTp.trim() ? parseFloat(advTp) : 0,
+          isOpenPosition: advOrderType === 'MARKET',
+          allowAutoClamp: false,
+        });
+        const advPresets = computeSlTpPresets({
+          symbol,
+          side: advSide,
+          volume: advVol,
+          entryPrice: refEntry,
+          liveBid: currentQuote.bid,
+          liveAsk: currentQuote.ask,
+          currentSl: advSl.trim() ? parseFloat(advSl) : undefined,
+          isOpenPosition: advOrderType === 'MARKET',
+        });
 
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setAdvSide('BUY')}
-                className={`py-2.5 rounded-[12px] text-xs font-extrabold cursor-pointer ${
-                  advSide === 'BUY' ? 'bg-[#00B87C] text-white' : 'bg-[#0C1411] text-[#8B9A92] border border-white/10'
-                }`}
-              >
-                BUY
-              </button>
-              <button
-                type="button"
-                onClick={() => setAdvSide('SELL')}
-                className={`py-2.5 rounded-[12px] text-xs font-extrabold cursor-pointer ${
-                  advSide === 'SELL' ? 'bg-[#F01650] text-white' : 'bg-[#0C1411] text-[#8B9A92] border border-white/10'
-                }`}
-              >
-                SELL
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-2">
-              {(['MARKET', 'LIMIT', 'STOP'] as const).map((ot) => (
+        return (
+          <div className="fixed inset-0 z-[60] bg-[#050807]/90 apex-backdrop-enter flex items-center justify-center p-3 sm:p-4">
+            <div className="w-full max-w-md max-h-[90dvh] overflow-y-auto custom-scrollbar bg-[#070C0A] border border-[#28D6B0]/35 rounded-[20px] p-4 sm:p-6 space-y-4 shadow-2xl apex-scale-in">
+              <div className="flex items-center justify-between border-b border-white/10 pb-3">
+                <div>
+                  <h3 className="font-display text-sm sm:text-base font-bold text-white">
+                    Advanced Order Ticket ({symbol})
+                  </h3>
+                  <div className="text-[11px] font-mono text-[#A5B5AE] tabular-nums">
+                    Bid {currentQuote.bid.toFixed(spec.decimals)} / Ask {currentQuote.ask.toFixed(spec.decimals)} ·{' '}
+                    {advVol.toFixed(2)} Lots
+                  </div>
+                </div>
                 <button
-                  key={ot}
                   type="button"
-                  onClick={() => setAdvOrderType(ot)}
-                  className={`py-2 rounded-[12px] text-xs font-bold cursor-pointer ${
-                    advOrderType === ot
-                      ? 'bg-[#101B17] text-[#28D6B0] border border-[#28D6B0]/45'
-                      : 'bg-[#0C1411] text-[#8B9A92] border border-white/10'
+                  onClick={() => {
+                    setShowAdvancedOrderTicket(false);
+                    setAdvOrderError(null);
+                  }}
+                  className="text-[#8B9A92] hover:text-white cursor-pointer p-1"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {advOrderError && (
+                <div className="p-2.5 rounded-[12px] bg-[#F01650]/15 border border-[#F01650]/45 text-xs font-semibold text-rose-200 leading-snug break-words">
+                  {advOrderError}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdvSide('BUY');
+                    setAdvOrderError(null);
+                  }}
+                  className={`py-2.5 rounded-[12px] text-xs font-extrabold cursor-pointer ${
+                    advSide === 'BUY' ? 'bg-[#00B87C] text-white' : 'bg-[#0C1411] text-[#8B9A92] border border-white/10'
                   }`}
                 >
-                  {ot}
+                  BUY
                 </button>
-              ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdvSide('SELL');
+                    setAdvOrderError(null);
+                  }}
+                  className={`py-2.5 rounded-[12px] text-xs font-extrabold cursor-pointer ${
+                    advSide === 'SELL' ? 'bg-[#F01650] text-white' : 'bg-[#0C1411] text-[#8B9A92] border border-white/10'
+                  }`}
+                >
+                  SELL
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {(['MARKET', 'LIMIT', 'STOP'] as const).map((ot) => (
+                  <button
+                    key={ot}
+                    type="button"
+                    onClick={() => {
+                      setAdvOrderType(ot);
+                      setAdvOrderError(null);
+                    }}
+                    className={`py-2 rounded-[12px] text-xs font-bold cursor-pointer ${
+                      advOrderType === ot
+                        ? 'bg-[#101B17] text-[#28D6B0] border border-[#28D6B0]/45'
+                        : 'bg-[#0C1411] text-[#8B9A92] border border-white/10'
+                    }`}
+                  >
+                    {ot}
+                  </button>
+                ))}
+              </div>
+
+              {advOrderType !== 'MARKET' && (
+                <div>
+                  <label className="block text-xs font-medium text-[#A5B5AE] mb-1">
+                    Trigger Entry Price
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={advEntryPrice}
+                    onChange={(e) => {
+                      setAdvEntryPrice(e.target.value);
+                      setAdvOrderError(null);
+                    }}
+                    placeholder={String(advSide === 'BUY' ? currentQuote.ask : currentQuote.bid)}
+                    className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white tabular-nums"
+                  />
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-1.5">
+                {advPresets.riskUsdPresets.map((rp) => (
+                  <button
+                    key={rp.riskUsd}
+                    type="button"
+                    onClick={() => {
+                      setAdvSl(rp.slPrice.toFixed(spec.decimals));
+                      setAdvOrderError(null);
+                    }}
+                    className="px-2 py-1 rounded-[8px] bg-[#0C1411] border border-[#F01650]/35 text-[11px] font-bold text-rose-300 cursor-pointer"
+                  >
+                    SL -${rp.riskUsd}
+                  </button>
+                ))}
+                {advPresets.rrPresets.map((rr) => (
+                  <button
+                    key={rr.ratio}
+                    type="button"
+                    onClick={() => {
+                      if (!advSl.trim()) setAdvSl(rr.slPrice.toFixed(spec.decimals));
+                      setAdvTp(rr.tpPrice.toFixed(spec.decimals));
+                      setAdvOrderError(null);
+                    }}
+                    className="px-2 py-1 rounded-[8px] bg-[#0C1411] border border-[#28D6B0]/35 text-[11px] font-bold text-[#28D6B0] cursor-pointer"
+                  >
+                    TP {rr.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-[#A5B5AE] mb-1">Stop Loss</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={advSl}
+                    onChange={(e) => {
+                      setAdvSl(e.target.value);
+                      setAdvOrderError(null);
+                    }}
+                    placeholder="Optional"
+                    className="w-full px-3 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white tabular-nums"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-[#A5B5AE] mb-1">Take Profit</label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={advTp}
+                    onChange={(e) => {
+                      setAdvTp(e.target.value);
+                      setAdvOrderError(null);
+                    }}
+                    placeholder="Optional"
+                    className="w-full px-3 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white tabular-nums"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 p-2.5 rounded-[12px] bg-[#0C1411] border border-white/10 text-center">
+                <div>
+                  <div className="text-[10px] text-[#8B9A92]">SL Risk</div>
+                  <div className="text-xs font-extrabold text-[#F01650] tabular-nums">
+                    {advPreview.riskUsd > 0 ? `-$${advPreview.riskUsd.toFixed(2)}` : 'OFF'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#8B9A92]">R:R</div>
+                  <div className="text-xs font-extrabold text-white tabular-nums">
+                    {advPreview.rrRatio ? `1 : ${advPreview.rrRatio}` : '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[10px] text-[#8B9A92]">TP Target</div>
+                  <div className="text-xs font-extrabold text-[#28D6B0] tabular-nums">
+                    {advPreview.rewardUsd > 0 ? `+$${advPreview.rewardUsd.toFixed(2)}` : 'OFF'}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleAdvOrder}
+                className={`w-full py-3 rounded-[14px] font-display font-extrabold text-xs cursor-pointer ${
+                  advSide === 'BUY' ? 'bg-[#00B87C] text-white' : 'bg-[#F01650] text-white'
+                }`}
+              >
+                Submit {advOrderType} {advSide} Order
+              </button>
             </div>
-
-            {advOrderType !== 'MARKET' && (
-              <div>
-                <label className="block text-xs font-medium text-[#A5B5AE] mb-1">
-                  Trigger Entry Price
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  value={advEntryPrice}
-                  onChange={(e) => setAdvEntryPrice(e.target.value)}
-                  placeholder={String(currentQuote.bid)}
-                  className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white"
-                />
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-[#A5B5AE] mb-1">Stop Loss</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={advSl}
-                  onChange={(e) => setAdvSl(e.target.value)}
-                  placeholder="Optional"
-                  className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-[#A5B5AE] mb-1">Take Profit</label>
-                <input
-                  type="number"
-                  step="any"
-                  value={advTp}
-                  onChange={(e) => setAdvTp(e.target.value)}
-                  placeholder="Optional"
-                  className="w-full px-3.5 py-2.5 rounded-[12px] bg-[#0C1411] border border-white/15 text-xs font-bold text-white"
-                />
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={handleAdvOrder}
-              className={`w-full py-3 rounded-[14px] font-display font-extrabold text-xs cursor-pointer ${
-                advSide === 'BUY' ? 'bg-[#00B87C] text-white' : 'bg-[#F01650] text-white'
-              }`}
-            >
-              Submit {advOrderType} {advSide} Order
-            </button>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* 11. PRICE ALERTS MANAGER MODAL */}
       {showAlertsModal && (
-        <div className="fixed inset-0 z-50 bg-[#050807]/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-md bg-[#070C0A] border border-[#28D6B0]/30 rounded-[22px] p-6 space-y-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 bg-[#050807]/88 apex-backdrop-enter flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#070C0A] border border-[#28D6B0]/30 rounded-[22px] p-6 space-y-4 shadow-2xl apex-scale-in">
             <div className="flex items-center justify-between border-b border-white/10 pb-3">
               <h3 className="font-display text-base font-bold text-white flex items-center gap-2">
                 <Bell className="w-4 h-4 text-[#28D6B0]" />
@@ -2581,6 +3258,165 @@ export const TradingTerminalView: React.FC = () => {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 12. ACTIVE ACCOUNT & CHALLENGE RULES GOVERNANCE MODAL */}
+      {showAccountRulesModal && (
+        <div
+          data-testid="terminal-account-rules-modal"
+          onClick={() => setShowAccountRulesModal(false)}
+          className="fixed inset-0 z-50 bg-[#050807]/90 apex-backdrop-enter flex items-center justify-center p-3 sm:p-5"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-xl bg-[#070C0A] border border-[#28D6B0]/30 rounded-[22px] p-5 sm:p-6 space-y-4 shadow-2xl max-h-[88vh] overflow-y-auto custom-scrollbar apex-scale-in"
+          >
+            <div className="flex items-start justify-between gap-3 border-b border-white/10 pb-3.5">
+              <div>
+                <div className="inline-flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-wider text-[#28D6B0]">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>{accountRulesSummary.programLabel}</span>
+                </div>
+                <h3 className="font-display text-base sm:text-lg font-extrabold text-white mt-0.5">
+                  Account #{effectiveAccount.accountNumber} · ${effectiveAccount.startingBalance.toLocaleString()}
+                </h3>
+                <p className="text-xs text-[#8B9A92] mt-0.5">
+                  {accountRulesSummary.currentPhaseLabel} · {accountRulesSummary.phaseTargetsText}
+                </p>
+              </div>
+              <button
+                type="button"
+                data-testid="close-account-rules-modal"
+                onClick={() => setShowAccountRulesModal(false)}
+                className="p-1.5 rounded-[10px] bg-[#0C1411] text-[#8B9A92] hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Live Risk Progress Bars */}
+            <div className="space-y-3">
+              {/* Daily Drawdown */}
+              <div className="p-3.5 rounded-[14px] bg-[#0C1411] border border-white/10 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-[#F01650]">
+                    Daily Drawdown Limit ({accountRulesSummary.dailyDrawdownPct}%)
+                  </span>
+                  <span className="font-mono font-bold text-white tabular-nums">
+                    ${riskMetrics.dailyDropUsd.toFixed(2)} / ${accountRulesSummary.dailyDrawdownLimitUsd.toFixed(2)} (
+                    {riskMetrics.dailyDrawdownUsedPct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="w-full bg-[#14221D] rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-[#F01650] h-2 rounded-full transition-all"
+                    style={{ width: `${Math.min(100, riskMetrics.dailyDrawdownUsedPct)}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-[#8B9A92] tabular-nums">
+                  <span>Daily Breach Equity Floor:</span>
+                  <span className="font-mono font-semibold text-rose-300">
+                    ${accountRulesSummary.dailyBreachEquityFloorUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+
+              {/* Maximum Overall Drawdown */}
+              <div className="p-3.5 rounded-[14px] bg-[#0C1411] border border-white/10 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-[#F01650]">
+                    Maximum Static Drawdown ({accountRulesSummary.maxDrawdownPct}%)
+                  </span>
+                  <span className="font-mono font-bold text-white tabular-nums">
+                    ${riskMetrics.overallDropUsd.toFixed(2)} / ${accountRulesSummary.maxDrawdownLimitUsd.toFixed(2)} (
+                    {riskMetrics.maxDrawdownUsedPct.toFixed(1)}%)
+                  </span>
+                </div>
+                <div className="w-full bg-[#14221D] rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-[#F01650] h-2 rounded-full transition-all"
+                    style={{ width: `${Math.min(100, riskMetrics.maxDrawdownUsedPct)}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-[#8B9A92] tabular-nums">
+                  <span>Static Account Breach Floor:</span>
+                  <span className="font-mono font-semibold text-rose-300">
+                    ${accountRulesSummary.maxBreachEquityFloorUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                  </span>
+                </div>
+              </div>
+
+              {/* Profit Target */}
+              <div className="p-3.5 rounded-[14px] bg-[#0C1411] border border-white/10 space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-bold text-[#00B87C]">
+                    {isInstantAccount
+                      ? 'Profit Target (Instant Funded)'
+                      : `Phase Profit Target (+${accountRulesSummary.activeTargetPct}%)`}
+                  </span>
+                  <span className="font-mono font-bold text-white tabular-nums">
+                    {isInstantAccount
+                      ? 'No Target (Direct Funded)'
+                      : `$${riskMetrics.netGainUsd.toFixed(2)} / $${targetLimitUsd.toFixed(2)} (${riskMetrics.profitProgressPct.toFixed(1)}%)`}
+                  </span>
+                </div>
+                <div className="w-full bg-[#14221D] rounded-full h-2 overflow-hidden">
+                  <div
+                    className="bg-[#00B87C] h-2 rounded-full transition-all"
+                    style={{
+                      width: `${isInstantAccount ? 100 : Math.min(100, Math.max(0, riskMetrics.profitProgressPct))}%`,
+                    }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-[#8B9A92]">
+                  <span>Progression Track:</span>
+                  <span className="font-mono font-semibold text-[#28D6B0]">
+                    {accountRulesSummary.phaseTargetsText}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Key Account Rule Specifications Grid */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+              <div className="p-3 rounded-[12px] bg-[#0C1411] border border-white/8">
+                <div className="text-[10px] text-[#8B9A92] uppercase font-mono">Leverage</div>
+                <div className="font-mono font-extrabold text-white mt-0.5">
+                  {accountRulesSummary.leverageText}
+                </div>
+              </div>
+              <div className="p-3 rounded-[12px] bg-[#0C1411] border border-white/8">
+                <div className="text-[10px] text-[#8B9A92] uppercase font-mono">Profit Split</div>
+                <div className="font-mono font-extrabold text-[#28D6B0] mt-0.5">
+                  {accountRulesSummary.profitSplitPct}% Trader
+                </div>
+              </div>
+              <div className="p-3 rounded-[12px] bg-[#0C1411] border border-white/8">
+                <div className="text-[10px] text-[#8B9A92] uppercase font-mono">Trading Days</div>
+                <div className="font-mono font-extrabold text-white mt-0.5">
+                  {effectiveAccount.tradingDaysCount} / {accountRulesSummary.payoutMinTradingDays} Days
+                </div>
+              </div>
+              <div className="p-3 rounded-[12px] bg-[#0C1411] border border-white/8 sm:col-span-2">
+                <div className="text-[10px] text-[#8B9A92] uppercase font-mono">Consistency Rule</div>
+                <div className="font-mono font-bold text-white mt-0.5">
+                  {accountRulesSummary.consistencyRuleText}
+                </div>
+              </div>
+              <div className="p-3 rounded-[12px] bg-[#0C1411] border border-white/8">
+                <div className="text-[10px] text-[#8B9A92] uppercase font-mono">Time Limit</div>
+                <div className="font-mono font-bold text-[#28D6B0] mt-0.5">Unlimited</div>
+              </div>
+            </div>
+
+            <div className="p-3 rounded-[12px] bg-[#09120F] border border-[#28D6B0]/20 text-[11px] text-[#A5B5AE] leading-relaxed">
+              <strong className="text-[#28D6B0]">Chart SL &amp; TP Tip:</strong> Once a position is open, click{' '}
+              <span className="text-rose-300 font-mono font-bold">+SL</span> or{' '}
+              <span className="text-emerald-300 font-mono font-bold">+TP</span> directly on the chart position badge, drag the{' '}
+              <span className="font-mono font-bold text-white">SL / TP</span> handles vertically on the chart, or right-click any price level on the chart to set Stop Loss and Take Profit.
             </div>
           </div>
         </div>

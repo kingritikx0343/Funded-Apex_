@@ -137,14 +137,14 @@ export const Footer: React.FC = () => {
         {/* Column 2: Platform & Community */}
         <div className="space-y-4">
           <h4 className="text-base font-display font-bold text-[#F4F8F6] tracking-[-0.02em] border-b border-[#28D6B0]/15 pb-3">
-            Platform &amp; Rewards
+            Platform &amp; Community
           </h4>
           <ul className="space-y-2.5">
             {[
               { label: 'About FUNDED APEX', target: 'about' as PageRoute },
               { label: 'Verified Payouts Registry', target: 'payouts' as PageRoute },
               { label: 'Trader Leaderboard', target: 'leaderboard' as PageRoute },
-              { label: 'Trader Rewards & Spin', target: 'free-spin' as PageRoute },
+              { label: 'Affiliate Program', target: 'referral' as PageRoute },
               { label: 'Frequently Asked Questions', target: 'faq' as PageRoute },
             ].map((link) => (
               <li key={link.label}>

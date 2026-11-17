@@ -6,6 +6,8 @@ import {
   TradeOrderRecord,
   roundPrice,
   calculatePositionPnl,
+  formatCandleCountdown,
+  resolveChartPriceOrderType,
 } from '../engine/tradingEngine';
 import {
   LiveCandle,
@@ -13,6 +15,27 @@ import {
   buildSpotAnchoredCandles,
   getTimeframeStepMultiplier,
 } from '../engine/liveMarketFeed';
+import {
+  Crosshair,
+  TrendingUp,
+  Minus,
+  SeparatorVertical,
+  ArrowUpRight,
+  Square,
+  AlignJustify,
+  TrendingUp as LongIcon,
+  TrendingDown as ShortIcon,
+  Ruler,
+  Lock,
+  Unlock,
+  Eye,
+  EyeOff,
+  Undo2,
+  Trash2,
+  Pencil,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 
 export type ChartTypeMode = 'candles' | 'hollow' | 'bars' | 'line' | 'area' | 'heikin_ashi';
 export type DrawingToolMode =
@@ -65,6 +88,7 @@ interface ApexLiveCandlestickChartProps {
   symbol: SymbolCode;
   timeframeLabel: string;
   timeframeSeconds: number;
+  candleCountdown?: string;
   bid?: number;
   ask?: number;
   currentBid?: number;
@@ -75,6 +99,10 @@ interface ApexLiveCandlestickChartProps {
   chartType?: ChartTypeMode;
   onChartTypeChange?: (next: ChartTypeMode) => void;
   showDrawingToolbar?: boolean;
+  tradeVolume?: string;
+  onTradeVolumeChange?: (nextVolume: string) => void;
+  onExecuteMarketOrder?: (side: OrderSide, targetSymbol: SymbolCode) => void;
+  onPlacePendingOrderAtPrice?: (side: OrderSide, price: number, targetSymbol: SymbolCode) => void;
   onClosePosition?: (orderId: string) => void;
   onCancelPendingOrder?: (orderId: string) => void;
   onModifyPositionSlTp?: (orderId: string, nextSl: number, nextTp: number) => void;
@@ -82,8 +110,8 @@ interface ApexLiveCandlestickChartProps {
   onQuickCreateAlert?: (price: number) => void;
 }
 
-const PRICE_AXIS_WIDTH = 72;
-const TIME_AXIS_HEIGHT = 24;
+const PRICE_AXIS_WIDTH = 76;
+const TIME_AXIS_HEIGHT = 26;
 const DRAWINGS_STORAGE_KEY = 'funded_apex_chart_drawings_v2';
 
 interface DraggingSlTpState {
@@ -96,15 +124,22 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
   symbol,
   timeframeLabel,
   timeframeSeconds,
+  candleCountdown,
   bid,
   ask,
   currentBid,
   currentAsk,
   openPositions = [],
+  pendingOrders = [],
   chartType: externalChartType,
   onChartTypeChange,
   showDrawingToolbar = true,
+  tradeVolume = '0.01',
+  onTradeVolumeChange,
+  onExecuteMarketOrder,
+  onPlacePendingOrderAtPrice,
   onClosePosition,
+  onCancelPendingOrder,
   onModifyPositionSlTp,
   onEditPositionModal,
   onQuickCreateAlert,
@@ -114,6 +149,9 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
   const effectiveAsk = currentAsk ?? ask ?? 0;
   const activePrice =
     effectiveBid > 0 ? effectiveBid : effectiveAsk > 0 ? effectiveAsk - spec.spread : spec.basePrice;
+  const displayBid = effectiveBid > 0 ? effectiveBid : activePrice;
+  const displayAsk =
+    effectiveAsk > 0 ? effectiveAsk : roundPrice(displayBid + spec.spread, symbol);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -122,6 +160,8 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
     width: 390,
     height: 460,
   });
+  const [showMobileDrawingRail, setShowMobileDrawingRail] = useState<boolean>(false);
+  const [showChartTradeButtons, setShowChartTradeButtons] = useState<boolean>(true);
 
   // Chart Type state (synced with optional parent prop)
   const [internalChartType, setInternalChartType] = useState<ChartTypeMode>('candles');
@@ -203,6 +243,16 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
 
   const openPositionsRef = useRef<ChartPositionLine[]>(openPositions);
   openPositionsRef.current = openPositions;
+
+  const pendingOrdersRef = useRef<TradeOrderRecord[]>(pendingOrders);
+  pendingOrdersRef.current = pendingOrders;
+
+  const countdownRef = useRef<string>(
+    candleCountdown || formatCandleCountdown(Date.now(), timeframeSeconds)
+  );
+  if (candleCountdown) {
+    countdownRef.current = candleCountdown;
+  }
 
   // Measure container size with ResizeObserver
   useEffect(() => {
@@ -852,10 +902,39 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
     [timeframeSeconds]
   );
 
-  // Draw crisp 60fps TradingView-inspired chart on HTML5 Canvas
+  // Draw crisp 120fps-capable TradingView-inspired chart on HTML5 Canvas with dirty-frame skipping
   useEffect(() => {
     let rafId: number;
     let smoothLivePrice = latestPriceRef.current;
+    const priceEps = Math.pow(10, -(spec.decimals + 2));
+
+    let prevSec = -1;
+    let prevW = -1;
+    let prevH = -1;
+    let prevDpr = -1;
+    let prevTargetPrice = NaN;
+    let prevCandles: LiveCandle[] | null = null;
+    let prevLastClose = NaN;
+    let prevLastHigh = NaN;
+    let prevLastLow = NaN;
+    let prevLastTime = -1;
+    let prevMinP = NaN;
+    let prevMaxP = NaN;
+    let prevVisCount = -1;
+    let prevPanOffset = NaN;
+    let prevChX = NaN;
+    let prevChY = NaN;
+    let prevDragId: string | undefined;
+    let prevDragPrice = NaN;
+    let prevChartType: unknown;
+    let prevOsc: unknown;
+    let prevFlags = '';
+    let prevIndicators: unknown;
+    let prevDrawings: unknown;
+    let prevDraft: unknown;
+    let prevPositions: unknown;
+    let prevPending: unknown;
+
     const render = () => {
       const canvas = canvasRef.current;
       if (!canvas) {
@@ -869,18 +948,91 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
       }
 
       const targetLivePrice = latestPriceRef.current;
-      if (
+      const isJump =
         !Number.isFinite(smoothLivePrice) ||
         smoothLivePrice <= 0 ||
-        Math.abs(targetLivePrice - smoothLivePrice) > spec.volatility * 6
-      ) {
+        Math.abs(targetLivePrice - smoothLivePrice) > spec.volatility * 6;
+      const isPriceConverging = !isJump && Math.abs(targetLivePrice - smoothLivePrice) > priceEps;
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const { width, height } = dimensions;
+      const nowSec = Math.floor(Date.now() / 1000);
+      const pb = priceBoundsRef.current;
+      const currentCandles = candlesRef.current;
+      const lastC = currentCandles.length > 0 ? currentCandles[currentCandles.length - 1] : null;
+      const visCount = Math.max(20, visibleCountRef.current);
+      const pOffset = panOffsetRef.current;
+      const ch = crosshairRef.current;
+      const chX = ch ? ch.x : -1;
+      const chY = ch ? ch.y : -1;
+      const dSlTp = draggingSlTpRef.current;
+      const flagsKey = `${showEma20Ref.current ? 1 : 0}${showEma50Ref.current ? 1 : 0}${showSma200Ref.current ? 1 : 0}${showVwapRef.current ? 1 : 0}${showBBandsRef.current ? 1 : 0}${showSupertrendRef.current ? 1 : 0}${showVolumeRef.current ? 1 : 0}${hideDrawingsRef.current ? 1 : 0}`;
+
+      const isDirty =
+        isPriceConverging ||
+        isJump ||
+        nowSec !== prevSec ||
+        width !== prevW ||
+        height !== prevH ||
+        dpr !== prevDpr ||
+        targetLivePrice !== prevTargetPrice ||
+        currentCandles !== prevCandles ||
+        (lastC ? lastC.close !== prevLastClose || lastC.high !== prevLastHigh || lastC.low !== prevLastLow || lastC.time !== prevLastTime : prevLastTime !== -1) ||
+        pb.minPrice !== prevMinP ||
+        pb.maxPrice !== prevMaxP ||
+        visCount !== prevVisCount ||
+        pOffset !== prevPanOffset ||
+        chX !== prevChX ||
+        chY !== prevChY ||
+        dSlTp?.orderId !== prevDragId ||
+        (dSlTp ? dSlTp.price : -1) !== prevDragPrice ||
+        chartTypeRef.current !== prevChartType ||
+        oscillatorRef.current !== prevOsc ||
+        flagsKey !== prevFlags ||
+        indicatorsRef.current !== prevIndicators ||
+        drawingsRef.current !== prevDrawings ||
+        draftDrawingRef.current !== prevDraft ||
+        openPositionsRef.current !== prevPositions ||
+        pendingOrdersRef.current !== prevPending;
+
+      if (!isDirty) {
+        rafId = requestAnimationFrame(render);
+        return;
+      }
+
+      if (isJump || !isPriceConverging) {
         smoothLivePrice = targetLivePrice;
       } else {
         smoothLivePrice += (targetLivePrice - smoothLivePrice) * 0.28;
       }
 
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const { width, height } = dimensions;
+      prevSec = nowSec;
+      prevW = width;
+      prevH = height;
+      prevDpr = dpr;
+      prevTargetPrice = targetLivePrice;
+      prevCandles = currentCandles;
+      prevLastClose = lastC ? lastC.close : NaN;
+      prevLastHigh = lastC ? lastC.high : NaN;
+      prevLastLow = lastC ? lastC.low : NaN;
+      prevLastTime = lastC ? lastC.time : -1;
+      prevMinP = pb.minPrice;
+      prevMaxP = pb.maxPrice;
+      prevVisCount = visCount;
+      prevPanOffset = pOffset;
+      prevChX = chX;
+      prevChY = chY;
+      prevDragId = dSlTp?.orderId;
+      prevDragPrice = dSlTp ? dSlTp.price : -1;
+      prevChartType = chartTypeRef.current;
+      prevOsc = oscillatorRef.current;
+      prevFlags = flagsKey;
+      prevIndicators = indicatorsRef.current;
+      prevDrawings = drawingsRef.current;
+      prevDraft = draftDrawingRef.current;
+      prevPositions = openPositionsRef.current;
+      prevPending = pendingOrdersRef.current;
+
       if (canvas.width !== width * dpr || canvas.height !== height * dpr) {
         canvas.width = width * dpr;
         canvas.height = height * dpr;
@@ -889,11 +1041,10 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
       ctx.save();
       ctx.scale(dpr, dpr);
 
-      // 1. Deep Aqua-Fintech Institutional Chart Background (#080D0B)
-      ctx.fillStyle = '#080D0B';
+      // 1. TradingView Supercharts Dark Slate Background (#131722)
+      ctx.fillStyle = '#131722';
       ctx.fillRect(0, 0, width, height);
 
-      const pb = priceBoundsRef.current;
       const oscMode = oscillatorRef.current;
       const curOscH = oscMode !== 'none' ? Math.min(105, Math.round(height * 0.22)) : 0;
       const plotW = Math.max(120, width - PRICE_AXIS_WIDTH);
@@ -918,10 +1069,10 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
       const niceStep = Math.max(Math.pow(10, -spec.decimals), niceMultiple * magnitude);
       const firstTick = Math.ceil(pb.minPrice / niceStep) * niceStep;
 
-      ctx.strokeStyle = 'rgba(40, 214, 176, 0.05)';
+      ctx.strokeStyle = 'rgba(42, 46, 57, 0.55)';
       ctx.lineWidth = 1;
-      ctx.fillStyle = '#8B9A92';
-      ctx.font = '600 11px "Plus Jakarta Sans", sans-serif';
+      ctx.fillStyle = '#787B86';
+      ctx.font = '500 11px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
 
@@ -932,13 +1083,10 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         ctx.moveTo(0, y);
         ctx.lineTo(plotW, y);
         ctx.stroke();
-        ctx.fillText(formatAxisPrice(tick), plotW + 7, y);
+        ctx.fillText(formatAxisPrice(tick), plotW + 8, y);
       }
 
       // 3. Vertical Time Grid Lines & Time Axis Labels + Chart Series
-      const currentCandles = candlesRef.current;
-      const visCount = Math.max(20, visibleCountRef.current);
-      const pOffset = panOffsetRef.current;
 
       if (currentCandles.length > 0) {
         const liveCenterSlot = Math.floor(visCount * 0.52);
@@ -965,8 +1113,8 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         const visibleSlice = currentCandles.slice(startIdx, Math.max(startIdx + 1, endIdx));
 
         ctx.textAlign = 'center';
-        ctx.fillStyle = '#8B9A92';
-        ctx.font = '600 10.5px "Plus Jakarta Sans", sans-serif';
+        ctx.fillStyle = '#787B86';
+        ctx.font = '500 10.5px "Plus Jakarta Sans", sans-serif';
         const timeStepSlots = Math.max(6, Math.round(visCount / 6));
         const minGridK = Math.floor(lastIdx - liveCenterSlot - clampedOff - 1);
         const maxGridK = Math.ceil(lastIdx + (visCount - liveCenterSlot) - clampedOff + 1);
@@ -975,7 +1123,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           if (Math.abs(lastIdx - k) % timeStepSlots !== 0) continue;
           const cx = Math.round(getCandleX(k)) + 0.5;
           if (cx < 24 || cx > plotW - 24) continue;
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.032)';
+          ctx.strokeStyle = 'rgba(42, 46, 57, 0.55)';
           ctx.beginPath();
           ctx.moveTo(cx, 0);
           ctx.lineTo(cx, plotH + curOscH);
@@ -988,8 +1136,8 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           ctx.fillText(formatAxisTime(barTime), cx, plotH + curOscH + TIME_AXIS_HEIGHT / 2);
         }
 
-        // Separators
-        ctx.strokeStyle = 'rgba(40, 214, 176, 0.14)';
+        // Hairline TradingView Separators
+        ctx.strokeStyle = '#2A2E39';
         ctx.beginPath();
         ctx.moveTo(plotW + 0.5, 0);
         ctx.lineTo(plotW + 0.5, height);
@@ -1000,6 +1148,12 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           ctx.lineTo(width, plotH + curOscH + 0.5);
         }
         ctx.stroke();
+
+        // Bottom-Right AUTO Corner Tag (TradingView axis corner)
+        ctx.fillStyle = '#787B86';
+        ctx.font = '700 9.5px "Plus Jakarta Sans", sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('AUTO', plotW + PRICE_AXIS_WIDTH / 2, plotH + curOscH + TIME_AXIS_HEIGHT / 2 + 0.5);
 
         // Clip plot area
         ctx.save();
@@ -1026,9 +1180,9 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
             ctx.lineTo(cx, y);
           }
           ctx.closePath();
-          ctx.fillStyle = 'rgba(40, 214, 176, 0.05)';
+          ctx.fillStyle = 'rgba(41, 98, 255, 0.07)';
           ctx.fill();
-          ctx.strokeStyle = 'rgba(40, 214, 176, 0.28)';
+          ctx.strokeStyle = 'rgba(41, 98, 255, 0.45)';
           ctx.stroke();
           ctx.restore();
         }
@@ -1054,14 +1208,14 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         if (showSma200Ref.current) drawOverlayLine(ind.sma200, '#38BDF8', 1.6);
         if (showVwapRef.current) drawOverlayLine(ind.vwap, '#A855F7', 1.5, [4, 2]);
         if (showEma50Ref.current) drawOverlayLine(ind.ema50, '#F59E0B', 1.5);
-        if (showEma20Ref.current) drawOverlayLine(ind.ema20, '#28D6B0', 1.5);
+        if (showEma20Ref.current) drawOverlayLine(ind.ema20, '#2962FF', 1.5);
 
         if (showSupertrendRef.current && visibleSlice.length > 1) {
           for (let i = 1; i < visibleSlice.length; i++) {
             const k = startIdx + i;
             const prevK = k - 1;
             ctx.save();
-            ctx.strokeStyle = ind.supertrendDir[k] === 1 ? '#28D6B0' : '#F01650';
+            ctx.strokeStyle = ind.supertrendDir[k] === 1 ? '#089981' : '#F23645';
             ctx.lineWidth = 1.8;
             ctx.beginPath();
             ctx.moveTo(getCandleX(prevK), pToY(ind.supertrend[prevK]));
@@ -1091,7 +1245,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               if (i === 0) ctx.moveTo(cx, cy);
               else ctx.lineTo(cx, cy);
             }
-            ctx.strokeStyle = '#28D6B0';
+            ctx.strokeStyle = '#2962FF';
             ctx.lineWidth = 2.2;
             ctx.stroke();
 
@@ -1102,8 +1256,8 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               ctx.lineTo(firstX, plotH);
               ctx.closePath();
               const grad = ctx.createLinearGradient(0, 0, 0, plotH);
-              grad.addColorStop(0, 'rgba(40, 214, 176, 0.28)');
-              grad.addColorStop(1, 'rgba(40, 214, 176, 0.0)');
+              grad.addColorStop(0, 'rgba(41, 98, 255, 0.28)');
+              grad.addColorStop(1, 'rgba(41, 98, 255, 0.0)');
               ctx.fillStyle = grad;
               ctx.fill();
             }
@@ -1136,9 +1290,8 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
             }
 
             const isBull = closeP >= openP;
-            const bodyFill = isBull ? '#00C896' : '#F01650';
-            const borderStroke = isBull ? '#20F5C4' : '#FF4778';
-            const wickColor = isBull ? '#00E5B0' : '#FF2E63';
+            const bodyFill = isBull ? '#089981' : '#F23645';
+            const wickColor = isBull ? '#089981' : '#F23645';
             const cx = Math.floor(getCandleX(k)) + 0.5;
             if (cx < -bWidth || cx > plotW + bWidth) continue;
 
@@ -1146,7 +1299,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               const vRatio = Math.min(1, Math.max(0.08, (rawC.volume || 50) / maxVol));
               const vHeight = Math.round(vRatio * volMaxHeight);
               const bx = Math.round(cx - bWidth / 2);
-              ctx.fillStyle = isBull ? 'rgba(0, 200, 150, 0.15)' : 'rgba(240, 22, 80, 0.15)';
+              ctx.fillStyle = isBull ? 'rgba(8, 153, 129, 0.24)' : 'rgba(242, 54, 69, 0.24)';
               ctx.fillRect(bx, plotH - vHeight, Math.round(bWidth), vHeight);
             }
 
@@ -1175,7 +1328,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
             } else {
               // Crisp Pixel-Aligned Upper & Lower Wick
               ctx.strokeStyle = wickColor;
-              ctx.lineWidth = isActiveBar ? 1.65 : 1.35;
+              ctx.lineWidth = isActiveBar ? 1.5 : 1.25;
               ctx.beginPath();
               ctx.moveTo(cx, Math.floor(hY));
               ctx.lineTo(cx, Math.ceil(lY));
@@ -1186,19 +1339,14 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               const bH = Math.max(2, Math.round(rH));
 
               if (cType === 'hollow' && isBull) {
-                ctx.fillStyle = '#080D0B';
+                ctx.fillStyle = '#131722';
                 ctx.fillRect(bx, bTop, bw, bH);
-                ctx.strokeStyle = borderStroke;
+                ctx.strokeStyle = bodyFill;
                 ctx.lineWidth = 1.3;
                 ctx.strokeRect(bx + 0.5, bTop + 0.5, Math.max(1, bw - 1), Math.max(1, bH - 1));
               } else {
                 ctx.fillStyle = bodyFill;
                 ctx.fillRect(bx, bTop, bw, bH);
-                if (bw >= 4 && bH >= 3) {
-                  ctx.strokeStyle = borderStroke;
-                  ctx.lineWidth = isActiveBar ? 1.2 : 0.85;
-                  ctx.strokeRect(bx + 0.5, bTop + 0.5, bw - 1, bH - 1);
-                }
               }
             }
           }
@@ -1218,8 +1366,8 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
             const y2 = pToY(d.p2);
 
             ctx.save();
-            ctx.strokeStyle = d.color || '#28D6B0';
-            ctx.fillStyle = d.color || '#28D6B0';
+            ctx.strokeStyle = d.color || '#2962FF';
+            ctx.fillStyle = d.color || '#2962FF';
             ctx.lineWidth = 1.6;
 
             if (d.tool === 'hline') {
@@ -1258,14 +1406,14 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               const rw = Math.abs(x2 - x1);
               const rh = Math.abs(y2 - y1);
               ctx.fillStyle =
-                d.tool === 'measure' ? 'rgba(56, 189, 248, 0.14)' : 'rgba(40, 214, 176, 0.12)';
+                d.tool === 'measure' ? 'rgba(41, 98, 255, 0.16)' : 'rgba(8, 153, 129, 0.14)';
               ctx.fillRect(rx, ry, rw, rh);
-              ctx.strokeStyle = d.tool === 'measure' ? '#38BDF8' : '#28D6B0';
+              ctx.strokeStyle = d.tool === 'measure' ? '#2962FF' : '#089981';
               ctx.strokeRect(rx, ry, rw, rh);
               if (d.tool === 'measure') {
                 const diff = d.p2 - d.p1;
                 const pct = (diff / Math.max(1e-9, d.p1)) * 100;
-                ctx.fillStyle = '#F4F8F6';
+                ctx.fillStyle = '#F0F3FA';
                 ctx.font = '700 10px "Plus Jakarta Sans", sans-serif';
                 ctx.fillText(
                   `${diff >= 0 ? '+' : ''}${formatAxisPrice(diff)} (${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%)`,
@@ -1280,13 +1428,13 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               for (const lv of levels) {
                 const lp = d.p1 + (d.p2 - d.p1) * lv;
                 const ly = pToY(lp);
-                ctx.strokeStyle = lv === 0.5 || lv === 0.618 ? '#28D6B0' : 'rgba(245, 158, 11, 0.65)';
+                ctx.strokeStyle = lv === 0.5 || lv === 0.618 ? '#2962FF' : 'rgba(245, 158, 11, 0.72)';
                 ctx.lineWidth = 1.1;
                 ctx.beginPath();
                 ctx.moveTo(minX, ly);
                 ctx.lineTo(maxX, ly);
                 ctx.stroke();
-                ctx.fillStyle = '#F4F8F6';
+                ctx.fillStyle = '#D1D4DC';
                 ctx.font = '600 9.5px "Plus Jakarta Sans", sans-serif';
                 ctx.textAlign = 'left';
                 ctx.fillText(`${(lv * 100).toFixed(1)}% (${formatAxisPrice(lp)})`, minX + 4, ly - 5);
@@ -1300,13 +1448,13 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               const stopY = d.tool === 'long_rr' ? entryY + stopDistY : entryY - stopDistY;
 
               // Profit box
-              ctx.fillStyle = 'rgba(0, 184, 124, 0.16)';
+              ctx.fillStyle = 'rgba(8, 153, 129, 0.22)';
               ctx.fillRect(rx, Math.min(entryY, targetY), rw, Math.abs(targetY - entryY));
               // Risk box
-              ctx.fillStyle = 'rgba(240, 22, 80, 0.16)';
+              ctx.fillStyle = 'rgba(242, 54, 69, 0.22)';
               ctx.fillRect(rx, Math.min(entryY, stopY), rw, Math.abs(stopY - entryY));
 
-              ctx.strokeStyle = '#28D6B0';
+              ctx.strokeStyle = '#787B86';
               ctx.beginPath();
               ctx.moveTo(rx, entryY);
               ctx.lineTo(rx + rw, entryY);
@@ -1322,11 +1470,11 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         if (curOscH > 0 && visibleSlice.length > 1) {
           const oscTop = plotH;
           ctx.save();
-          ctx.fillStyle = '#060A08';
+          ctx.fillStyle = '#131722';
           ctx.fillRect(0, oscTop, plotW, curOscH);
 
-          ctx.fillStyle = '#28D6B0';
-          ctx.font = '700 10px "Plus Jakarta Sans", sans-serif';
+          ctx.fillStyle = '#D1D4DC';
+          ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
           ctx.textAlign = 'left';
           const lastK = startIdx + visibleSlice.length - 1;
           const labelTxt =
@@ -1340,7 +1488,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           if (oscMode === 'rsi') {
             const y70 = oscTop + curOscH * 0.3;
             const y30 = oscTop + curOscH * 0.7;
-            ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+            ctx.strokeStyle = 'rgba(120, 123, 134, 0.25)';
             ctx.setLineDash([3, 3]);
             ctx.beginPath();
             ctx.moveTo(0, y70);
@@ -1350,7 +1498,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
             ctx.stroke();
             ctx.setLineDash([]);
 
-            ctx.strokeStyle = '#28D6B0';
+            ctx.strokeStyle = '#7E57C2';
             ctx.lineWidth = 1.6;
             ctx.beginPath();
             for (let i = 0; i < visibleSlice.length; i++) {
@@ -1379,10 +1527,10 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
               const cx = getCandleX(k);
               const hVal = ind.macdHist[k] || 0;
               const barH = (hVal / maxM) * (curOscH * 0.36);
-              ctx.fillStyle = hVal >= 0 ? 'rgba(0, 184, 124, 0.55)' : 'rgba(240, 22, 80, 0.55)';
+              ctx.fillStyle = hVal >= 0 ? 'rgba(8, 153, 129, 0.65)' : 'rgba(242, 54, 69, 0.65)';
               ctx.fillRect(cx - bWidth / 2, barH >= 0 ? midY - barH : midY, Math.max(2, bWidth), Math.abs(barH));
             }
-            ctx.strokeStyle = '#28D6B0';
+            ctx.strokeStyle = '#2962FF';
             ctx.lineWidth = 1.4;
             ctx.beginPath();
             for (let i = 0; i < visibleSlice.length; i++) {
@@ -1418,19 +1566,49 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         }
       }
 
-      // 6. Open Positions & Draggable SL / TP Lines
+      // 6. Open Positions & Pending Order Lines + Draggable SL / TP Lines
+      const curPending = pendingOrdersRef.current;
+      for (const ord of curPending) {
+        if (ord.entryPrice >= pb.minPrice && ord.entryPrice <= pb.maxPrice) {
+          const py = Math.round(pToY(ord.entryPrice)) + 0.5;
+          const pColor = ord.side === 'BUY' ? '#2962FF' : '#F59E0B';
+          ctx.save();
+          ctx.setLineDash([4, 4]);
+          ctx.strokeStyle = pColor;
+          ctx.lineWidth = 1.15;
+          ctx.beginPath();
+          ctx.moveTo(0, py);
+          ctx.lineTo(plotW, py);
+          ctx.stroke();
+          ctx.fillStyle = pColor;
+          ctx.fillRect(plotW + 1, py - 9, PRICE_AXIS_WIDTH - 2, 18);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = '700 10px "Plus Jakarta Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(formatAxisPrice(ord.entryPrice), plotW + PRICE_AXIS_WIDTH / 2, py + 0.5);
+          ctx.restore();
+        }
+      }
+
       const curPositions = openPositionsRef.current;
       for (const pos of curPositions) {
         if (pos.entryPrice >= pb.minPrice && pos.entryPrice <= pb.maxPrice) {
           const py = Math.round(pToY(pos.entryPrice)) + 0.5;
+          const entryColor = pos.side === 'BUY' ? '#2962FF' : '#F23645';
           ctx.save();
           ctx.setLineDash([4, 3]);
-          ctx.strokeStyle = pos.side === 'BUY' ? '#00B87C' : '#F01650';
+          ctx.strokeStyle = entryColor;
           ctx.lineWidth = 1.25;
           ctx.beginPath();
           ctx.moveTo(0, py);
           ctx.lineTo(plotW, py);
           ctx.stroke();
+          ctx.fillStyle = entryColor;
+          ctx.fillRect(plotW + 1, py - 9, PRICE_AXIS_WIDTH - 2, 18);
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = '700 10px "Plus Jakarta Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(formatAxisPrice(pos.entryPrice), plotW + PRICE_AXIS_WIDTH / 2, py + 0.5);
           ctx.restore();
         }
         const drag = draggingSlTpRef.current;
@@ -1440,14 +1618,14 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           const isD = drag?.orderId === pos.id && drag?.type === 'SL';
           ctx.save();
           ctx.setLineDash(isD ? [] : [3, 3]);
-          ctx.strokeStyle = '#F01650';
+          ctx.strokeStyle = '#F23645';
           ctx.lineWidth = isD ? 2.2 : 1.3;
           ctx.beginPath();
           ctx.moveTo(0, sY);
           ctx.lineTo(plotW, sY);
           ctx.stroke();
-          ctx.fillStyle = '#F01650';
-          ctx.fillRect(plotW, sY - 9, PRICE_AXIS_WIDTH, 18);
+          ctx.fillStyle = '#F23645';
+          ctx.fillRect(plotW + 1, sY - 9, PRICE_AXIS_WIDTH - 2, 18);
           ctx.fillStyle = '#FFFFFF';
           ctx.font = '700 10px "Plus Jakarta Sans", sans-serif';
           ctx.textAlign = 'center';
@@ -1460,14 +1638,14 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           const isD = drag?.orderId === pos.id && drag?.type === 'TP';
           ctx.save();
           ctx.setLineDash(isD ? [] : [3, 3]);
-          ctx.strokeStyle = '#00B87C';
+          ctx.strokeStyle = '#089981';
           ctx.lineWidth = isD ? 2.2 : 1.3;
           ctx.beginPath();
           ctx.moveTo(0, tY);
           ctx.lineTo(plotW, tY);
           ctx.stroke();
-          ctx.fillStyle = '#00B87C';
-          ctx.fillRect(plotW, tY - 9, PRICE_AXIS_WIDTH, 18);
+          ctx.fillStyle = '#089981';
+          ctx.fillRect(plotW + 1, tY - 9, PRICE_AXIS_WIDTH - 2, 18);
           ctx.fillStyle = '#FFFFFF';
           ctx.font = '700 10px "Plus Jakarta Sans", sans-serif';
           ctx.textAlign = 'center';
@@ -1476,14 +1654,15 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         }
       }
 
-      // 7. Moveable Live Price Dotted Line + Crisp Green/Red Right-Axis Tag
+      // 7. TradingView Live Price Dotted Line + Stacked Price & Candle Countdown Right-Axis Marker
       const lastBar = currentCandles[currentCandles.length - 1];
       const liveRenderPrice = smoothLivePrice > 0 ? smoothLivePrice : latestPriceRef.current;
       const isLiveBull = !lastBar || liveRenderPrice >= lastBar.open;
-      const liveTagColor = isLiveBull ? '#00B87C' : '#F01650';
-      const lY = Math.max(14, Math.min(plotH - 22, Math.round(pToY(liveRenderPrice)) + 0.5));
+      const liveTagColor = isLiveBull ? '#089981' : '#F23645';
+      const countdownTagBg = isLiveBull ? '#056656' : '#B22833';
+      const lY = Math.max(12, Math.min(plotH - 27, Math.round(pToY(liveRenderPrice)) + 0.5));
       ctx.save();
-      ctx.setLineDash([3, 3]);
+      ctx.setLineDash([2, 2]);
       ctx.strokeStyle = liveTagColor;
       ctx.lineWidth = 1.25;
       ctx.beginPath();
@@ -1492,27 +1671,47 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
       ctx.stroke();
       ctx.restore();
 
-      const pillH = 22;
+      const priceTagH = 19;
+      const timerTagH = 16;
+      const tagX = plotW + 1;
+      const tagW = PRICE_AXIS_WIDTH - 2;
+      const priceTop = lY - priceTagH / 2;
+
+      // Upper Live Price Box
       ctx.fillStyle = liveTagColor;
       ctx.beginPath();
-      ctx.roundRect(plotW, lY - pillH / 2, PRICE_AXIS_WIDTH - 2, pillH, 5);
+      ctx.roundRect(tagX, priceTop, tagW, priceTagH, [3, 3, 0, 0]);
       ctx.fill();
       ctx.fillStyle = '#FFFFFF';
       ctx.font = '700 10.5px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText(
-        `⇅ ${formatAxisPrice(latestPriceRef.current)}`,
-        plotW + (PRICE_AXIS_WIDTH - 2) / 2,
-        lY + 0.5
+        formatAxisPrice(latestPriceRef.current),
+        tagX + tagW / 2,
+        priceTop + priceTagH / 2 + 0.5
       );
 
-      // 8. Crosshair
-      const ch = crosshairRef.current;
-      const dSlTp = draggingSlTpRef.current;
+      // Directly Underneath: Live Candle Countdown Timer Box (TradingView style)
+      const activeCountdownStr = formatCandleCountdown(Date.now(), timeframeSeconds);
+      countdownRef.current = activeCountdownStr;
+      const timerTop = priceTop + priceTagH;
+      ctx.fillStyle = countdownTagBg;
+      ctx.beginPath();
+      ctx.roundRect(tagX, timerTop, tagW, timerTagH, [0, 0, 3, 3]);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.94)';
+      ctx.font = '600 9.5px "Plus Jakarta Sans", sans-serif';
+      ctx.fillText(
+        activeCountdownStr,
+        tagX + tagW / 2,
+        timerTop + timerTagH / 2 + 0.5
+      );
+
+      // 8. TradingView Crosshair (Horizontal + Vertical + Price Badge + Bottom Time Badge + Quick '+' Marker)
       if (!dSlTp && ch && ch.x >= 0 && ch.x <= plotW && ch.y >= 0 && ch.y <= plotH) {
         ctx.save();
         ctx.setLineDash([4, 4]);
-        ctx.strokeStyle = 'rgba(139, 154, 146, 0.45)';
+        ctx.strokeStyle = 'rgba(149, 152, 161, 0.55)';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(ch.x, 0);
@@ -1520,13 +1719,56 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
         ctx.moveTo(0, ch.y);
         ctx.lineTo(plotW, ch.y);
         ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Price scale badge
         const hP = pb.maxPrice - (ch.y / plotH) * priceSpan;
-        ctx.fillStyle = '#0C1411';
-        ctx.fillRect(plotW, ch.y - 10, PRICE_AXIS_WIDTH, 20);
-        ctx.fillStyle = '#28D6B0';
+        ctx.fillStyle = '#363A45';
+        ctx.beginPath();
+        ctx.roundRect(plotW + 1, ch.y - 10, PRICE_AXIS_WIDTH - 2, 20, 2);
+        ctx.fill();
+        ctx.fillStyle = '#F0F3FA';
         ctx.font = '700 10.5px "Plus Jakarta Sans", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(formatAxisPrice(hP), plotW + PRICE_AXIS_WIDTH / 2, ch.y + 0.5);
+
+        // Bottom time scale badge
+        if (currentCandles.length > 0) {
+          const liveCenterSlot = Math.floor(visCount * 0.52);
+          const lastIdx = currentCandles.length - 1;
+          const minOff = -Math.floor(visCount * 0.38);
+          const maxOff = Math.max(0, currentCandles.length - Math.floor(visCount * 0.2));
+          const clampedOff = Math.min(maxOff, Math.max(minOff, pOffset));
+          const sWidth = plotW / visCount;
+          const slot = ch.x / Math.max(1, sWidth) - 0.5;
+          const k = lastIdx + slot - liveCenterSlot - clampedOff;
+          const kInt = Math.round(k);
+          const chTime =
+            kInt >= 0 && kInt < currentCandles.length
+              ? currentCandles[kInt].time
+              : currentCandles[lastIdx].time + (k - lastIdx) * timeframeSeconds * 1000;
+          const chTimeLabel = formatAxisTime(chTime);
+          const badgeW = Math.max(66, chTimeLabel.length * 6.8 + 14);
+          const badgeX = Math.max(4, Math.min(plotW - badgeW - 4, ch.x - badgeW / 2));
+          ctx.fillStyle = '#363A45';
+          ctx.beginPath();
+          ctx.roundRect(badgeX, plotH + curOscH + 3, badgeW, TIME_AXIS_HEIGHT - 6, 2);
+          ctx.fill();
+          ctx.fillStyle = '#F0F3FA';
+          ctx.font = '600 10px "Plus Jakarta Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(chTimeLabel, badgeX + badgeW / 2, plotH + curOscH + TIME_AXIS_HEIGHT / 2 + 0.5);
+        }
+
+        // Quick '+' marker near price axis edge (TradingView alert/order anchor cue)
+        ctx.fillStyle = '#2A2E39';
+        ctx.beginPath();
+        ctx.roundRect(plotW - 22, Math.max(4, Math.min(plotH - 22, ch.y - 9)), 18, 18, 3);
+        ctx.fill();
+        ctx.fillStyle = '#D1D4DC';
+        ctx.font = '700 13px "Plus Jakarta Sans", sans-serif';
+        ctx.fillText('+', plotW - 13, Math.max(13, Math.min(plotH - 13, ch.y + 0.5)));
+
         ctx.restore();
       }
 
@@ -1629,10 +1871,19 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
     dragStartPriceScaleRef.current = priceScaleFactor;
     dragStartSpanRef.current = currentSpan;
 
+    // Right-bottom corner click on AUTO resets scale immediately
+    if (relX >= plotWidth - 2 && relY >= plotHeight + oscHeight - 2) {
+      setPanOffset(0);
+      setPricePanOffset(0);
+      setPriceScaleFactor(1);
+      setVisibleCount(48);
+      return;
+    }
+
     // Right price axis drag: if grabbing the live price pill, move price vertically; otherwise scale/move price axis
     if (relX >= plotWidth - 4) {
       const liveY = priceToY(latestPriceRef.current);
-      if (Math.abs(relY - liveY) <= 18) {
+      if (Math.abs(relY - liveY) <= 24) {
         isLivePillDraggingRef.current = true;
       } else {
         isPriceAxisDraggingRef.current = true;
@@ -1865,340 +2116,549 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
   };
 
   const symbolDrawingsCount = drawings.filter((d) => d.symbol === symbol).length;
+  const activeCandleCountdown =
+    candleCountdown || formatCandleCountdown(Date.now(), timeframeSeconds);
+  const candleChange = inspectedCandle ? inspectedCandle.close - inspectedCandle.open : 0;
+  const candleChangePct =
+    inspectedCandle && inspectedCandle.open > 0
+      ? (candleChange / inspectedCandle.open) * 100
+      : 0;
+  const spreadPoints = Math.max(
+    1,
+    Math.round((displayAsk - displayBid) * Math.pow(10, spec.decimals))
+  );
+
+  const drawingToolsList: { id: DrawingToolMode; title: string; Icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'cursor', title: 'Crosshair / Pan', Icon: Crosshair },
+    { id: 'trendline', title: 'Trend Line', Icon: TrendingUp },
+    { id: 'ray', title: 'Ray', Icon: ArrowUpRight },
+    { id: 'hline', title: 'Horizontal Line', Icon: Minus },
+    { id: 'vline', title: 'Vertical Line', Icon: SeparatorVertical },
+    { id: 'fib', title: 'Fib Retracement', Icon: AlignJustify },
+    { id: 'rect', title: 'Brush / Zone Box', Icon: Square },
+    { id: 'long_rr', title: 'Long Position R:R', Icon: LongIcon },
+    { id: 'short_rr', title: 'Short Position R:R', Icon: ShortIcon },
+    { id: 'measure', title: 'Measure Price & %', Icon: Ruler },
+  ];
 
   return (
-    <div
-      ref={containerRef}
-      onMouseDown={handleMouseDown}
-      onMouseMove={handleMouseMove}
-      onMouseUp={handleMouseUpOrLeave}
-      onMouseLeave={handleMouseUpOrLeave}
-      onWheel={handleWheel}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onContextMenu={(e) => {
-        e.preventDefault();
-        const rect = e.currentTarget.getBoundingClientRect();
-        const relY = e.clientY - rect.top;
-        setContextMenu({
-          x: Math.min(rect.width - 210, e.clientX - rect.left),
-          y: Math.min(rect.height - 220, relY),
-          price: yToPrice(relY),
-        });
-      }}
-      style={{ width: '100%', height: '100%' }}
-      className={`relative w-full h-full bg-[#080D0B] select-none overflow-hidden touch-none ${
-        draggingSlTp ? 'cursor-ns-resize' : activeTool !== 'cursor' ? 'cursor-cell' : 'cursor-crosshair'
-      }`}
-    >
-      <canvas
-        ref={canvasRef}
-        style={{ width: '100%', height: '100%' }}
-        className="block w-full h-full"
-      />
-
-      {/* Left Floating Drawing Tools Dock (Desktop & Tablet or when toggled) */}
+    <div className="flex w-full h-full bg-[#131722] select-none overflow-hidden">
+      {/* TradingView Left Docked Drawing Toolbar Rail */}
       {showDrawingToolbar && (
         <div
+          data-testid="tv-drawing-toolbar"
           onMouseDown={(e) => e.stopPropagation()}
           onTouchStart={(e) => e.stopPropagation()}
-          className="hidden sm:flex flex-col items-center gap-1 p-1.5 rounded-[14px] bg-[#0C1411]/92 backdrop-blur-md border border-[#28D6B0]/20 absolute left-2.5 top-12 z-20 shadow-xl"
+          className={`${
+            showMobileDrawingRail ? 'flex' : 'hidden sm:flex'
+          } w-10 shrink-0 h-full bg-[#131722] border-r border-[#2A2E39] flex-col items-center justify-between py-1.5 z-30 overflow-y-auto no-scrollbar`}
         >
-          {(
-            [
-              { id: 'cursor', label: '✢', title: 'Crosshair / Pan' },
-              { id: 'trendline', label: '╱', title: 'Trendline' },
-              { id: 'hline', label: '━', title: 'Horizontal Line' },
-              { id: 'ray', label: '↗', title: 'Ray Line' },
-              { id: 'rect', label: '▭', title: 'Supply/Demand Zone' },
-              { id: 'fib', label: '☰', title: 'Fibonacci Retracement' },
-              { id: 'long_rr', label: 'L', title: 'Long Position R:R' },
-              { id: 'short_rr', label: 'S', title: 'Short Position R:R' },
-              { id: 'measure', label: '📏', title: 'Measure Price & %' },
-            ] as { id: DrawingToolMode; label: string; title: string }[]
-          ).map((t) => (
+          <div className="flex flex-col items-center gap-1">
+            {drawingToolsList.map((t) => {
+              const IconComp = t.Icon;
+              const isAct = activeTool === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  title={t.title}
+                  aria-label={t.title}
+                  onClick={() => {
+                    setDraftDrawing(null);
+                    setActiveTool(t.id);
+                  }}
+                  className={`w-7 h-7 rounded-[4px] flex items-center justify-center transition-colors cursor-pointer ${
+                    isAct
+                      ? 'bg-[#2962FF]/20 text-[#2962FF]'
+                      : 'text-[#787B86] hover:text-[#D1D4DC] hover:bg-[#2A2E39]'
+                  }`}
+                >
+                  <IconComp className="w-3.5 h-3.5" />
+                </button>
+              );
+            })}
+
+            <div className="w-5 h-px bg-[#2A2E39] my-0.5" />
+
             <button
-              key={t.id}
               type="button"
-              title={t.title}
-              onClick={() => {
-                setDraftDrawing(null);
-                setActiveTool(t.id);
-              }}
-              className={`w-7 h-7 rounded-[9px] text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer ${
-                activeTool === t.id
-                  ? 'bg-[#28D6B0] text-[#04100C]'
-                  : 'text-[#8B9A92] hover:text-[#F4F8F6] hover:bg-white/5'
+              title={lockDrawings ? 'Unlock Drawings' : 'Lock Drawings'}
+              aria-label={lockDrawings ? 'Unlock Drawings' : 'Lock Drawings'}
+              onClick={() => setLockDrawings((v) => !v)}
+              className={`w-7 h-7 rounded-[4px] flex items-center justify-center cursor-pointer transition-colors ${
+                lockDrawings
+                  ? 'bg-[#2962FF]/20 text-[#2962FF]'
+                  : 'text-[#787B86] hover:text-[#D1D4DC] hover:bg-[#2A2E39]'
               }`}
             >
-              {t.label}
+              {lockDrawings ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
             </button>
-          ))}
 
-          {symbolDrawingsCount > 0 && (
-            <>
-              <div className="w-4 h-px bg-white/10 my-0.5" />
-              <button
-                type="button"
-                title="Undo Drawing"
-                onClick={handleUndoDrawing}
-                className="w-7 h-7 rounded-[9px] text-[11px] font-bold text-[#8B9A92] hover:text-[#F4F8F6] hover:bg-white/5 flex items-center justify-center cursor-pointer"
-              >
-                ↶
-              </button>
-              <button
-                type="button"
-                title="Clear Symbol Drawings"
-                onClick={() =>
-                  setDrawings((prev) => prev.filter((d) => d.symbol !== symbol))
-                }
-                className="w-7 h-7 rounded-[9px] text-[11px] font-bold text-[#F01650] hover:bg-[#F01650]/15 flex items-center justify-center cursor-pointer"
-              >
-                ✕
-              </button>
-            </>
-          )}
+            <button
+              type="button"
+              title={hideDrawings ? 'Show Drawings' : 'Hide Drawings'}
+              aria-label={hideDrawings ? 'Show Drawings' : 'Hide Drawings'}
+              onClick={() => setHideDrawings((v) => !v)}
+              className={`w-7 h-7 rounded-[4px] flex items-center justify-center cursor-pointer transition-colors ${
+                hideDrawings
+                  ? 'bg-[#2962FF]/20 text-[#2962FF]'
+                  : 'text-[#787B86] hover:text-[#D1D4DC] hover:bg-[#2A2E39]'
+              }`}
+            >
+              {hideDrawings ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+            </button>
+          </div>
+
+          <div className="flex flex-col items-center gap-1 pt-1">
+            {symbolDrawingsCount > 0 && (
+              <>
+                <button
+                  type="button"
+                  title="Undo Drawing"
+                  aria-label="Undo Drawing"
+                  onClick={handleUndoDrawing}
+                  className="w-7 h-7 rounded-[4px] text-[#787B86] hover:text-[#D1D4DC] hover:bg-[#2A2E39] flex items-center justify-center cursor-pointer"
+                >
+                  <Undo2 className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  title="Clear Symbol Drawings"
+                  aria-label="Clear Symbol Drawings"
+                  onClick={() =>
+                    setDrawings((prev) => prev.filter((d) => d.symbol !== symbol))
+                  }
+                  className="w-7 h-7 rounded-[4px] text-[#F23645] hover:bg-[#F23645]/15 flex items-center justify-center cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+          </div>
         </div>
       )}
 
-      {/* Top Chart OHLCV Readout + Chart Type + Indicators Selector */}
+      {/* Main TradingView Chart Canvas Viewport */}
       <div
-        onMouseDown={(e) => e.stopPropagation()}
-        onTouchStart={(e) => e.stopPropagation()}
-        className="absolute top-2 left-2.5 right-[76px] z-20 flex flex-wrap items-center justify-between gap-1.5 pointer-events-auto"
+        ref={containerRef}
+        data-testid="tv-chart-canvas-container"
+        data-live-price={formatAxisPrice(activePrice)}
+        data-candle-countdown={activeCandleCountdown}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUpOrLeave}
+        onMouseLeave={handleMouseUpOrLeave}
+        onWheel={handleWheel}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          const rect = e.currentTarget.getBoundingClientRect();
+          const relY = e.clientY - rect.top;
+          setContextMenu({
+            x: Math.max(8, Math.min(rect.width - 235, e.clientX - rect.left)),
+            y: Math.max(8, Math.min(rect.height - 280, relY)),
+            price: yToPrice(relY),
+          });
+        }}
+        className={`relative flex-1 min-w-0 h-full bg-[#131722] select-none overflow-hidden touch-none ${
+          draggingSlTp ? 'cursor-ns-resize' : activeTool !== 'cursor' ? 'cursor-cell' : 'cursor-crosshair'
+        }`}
       >
-        {/* OHLC + Live Wick Range HUD */}
-        {inspectedCandle && (
-          <div className="inline-flex flex-wrap items-center gap-2 px-3 py-1 rounded-[12px] bg-[#0C1411]/90 backdrop-blur-md border border-[#28D6B0]/20 text-[10.5px] font-sans font-semibold text-[#A5B5AE]">
-            <span className="font-extrabold text-[#F4F8F6]">{spec.shortName}</span>
-            <span>
-              O:<strong className="text-[#F4F8F6] ml-0.5 tabular-nums">{formatAxisPrice(inspectedCandle.open)}</strong>
-            </span>
-            <span>
-              H:<strong className="text-[#00B87C] ml-0.5 tabular-nums">{formatAxisPrice(inspectedCandle.high)}</strong>
-            </span>
-            <span>
-              L:<strong className="text-[#F01650] ml-0.5 tabular-nums">{formatAxisPrice(inspectedCandle.low)}</strong>
-            </span>
-            <span className="inline-flex items-center gap-1">
-              C:
-              <strong
-                className={`ml-0.5 px-1.5 py-0.2 rounded-[6px] tabular-nums inline-flex items-center gap-0.5 transition-colors duration-150 ${
-                  inspectedCandle.close >= inspectedCandle.open
-                    ? 'text-[#28D6B0] bg-[#28D6B0]/14'
-                    : 'text-[#F01650] bg-[#F01650]/14'
-                }`}
-              >
-                <span className="text-[8px]">
-                  {inspectedCandle.close >= inspectedCandle.open ? '▲' : '▼'}
+        <canvas
+          ref={canvasRef}
+          style={{ width: '100%', height: '100%' }}
+          className="block w-full h-full"
+        />
+
+        {/* TradingView Top-Left Legend + Quick Trade Execution Widget + Chart Tools */}
+        <div
+          onMouseDown={(e) => e.stopPropagation()}
+          onTouchStart={(e) => e.stopPropagation()}
+          className="absolute top-2 left-2.5 right-[82px] z-20 flex flex-col gap-1.5 pointer-events-none"
+        >
+          {/* Row 1: Symbol · TF · OHLC Legend & Chart Style / Indicators */}
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            {inspectedCandle && (
+              <div className="pointer-events-auto inline-flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] font-sans text-[#B2B5BE]">
+                <span className="inline-flex items-center gap-1.5 font-bold text-[#F0F3FA]">
+                  <span>{spec.shortName}</span>
+                  <span className="text-[#787B86] font-medium">·</span>
+                  <span className="text-[#D1D4DC]">{timeframeLabel}</span>
+                  <span className="text-[#787B86] font-medium">·</span>
+                  <span className="text-[10px] font-semibold text-[#787B86]">FUNDED APEX</span>
                 </span>
-                <span>{formatAxisPrice(inspectedCandle.close)}</span>
-              </strong>
-            </span>
-          </div>
-        )}
-
-        {/* Chart Type + Technical Indicators Toggles */}
-        <div className="inline-flex items-center gap-1 flex-wrap">
-          <select
-            aria-label="Chart Type"
-            value={activeChartType}
-            onChange={(e) => setChartType(e.target.value as ChartTypeMode)}
-            className="px-2.5 py-1 rounded-[10px] text-[10px] font-bold bg-[#0C1411]/92 border border-[#28D6B0]/25 text-[#F4F8F6] outline-none cursor-pointer"
-          >
-            <option value="candles">Candles</option>
-            <option value="hollow">Hollow Candles</option>
-            <option value="heikin_ashi">Heikin Ashi</option>
-            <option value="bars">OHLC Bars</option>
-            <option value="area">Area</option>
-            <option value="line">Line</option>
-          </select>
-
-          <button
-            type="button"
-            onClick={() => setShowEma20((v) => !v)}
-            className={`px-2.5 py-1 rounded-[10px] text-[10px] font-bold border transition-colors cursor-pointer ${
-              showEma20
-                ? 'bg-[#28D6B0]/18 border-[#28D6B0]/50 text-[#28D6B0]'
-                : 'bg-[#0C1411]/90 border-white/10 text-[#8B9A92] hover:text-white'
-            }`}
-          >
-            EMA20
-          </button>
-
-          <div className="relative">
-            <button
-              type="button"
-              onClick={() => setShowIndicatorsMenu((v) => !v)}
-              className="px-2.5 py-1 rounded-[10px] text-[10px] font-bold border bg-[#0C1411]/92 border-[#28D6B0]/25 text-[#28D6B0] hover:bg-[#121F1A] cursor-pointer"
-            >
-              fx Indicators ▾
-            </button>
-
-            {showIndicatorsMenu && (
-              <div className="absolute right-0 top-7 z-40 w-52 p-2.5 rounded-[16px] bg-[#070C0A] border border-[#28D6B0]/30 shadow-2xl space-y-1.5 text-[11px]">
-                <div className="text-[10px] font-bold text-[#8B9A92] uppercase px-1">
-                  Overlay Indicators
+                <div className="inline-flex items-center gap-2 tabular-nums text-[10.5px]">
+                  <span>
+                    O<strong className={`ml-0.5 font-semibold ${candleChange >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>{formatAxisPrice(inspectedCandle.open)}</strong>
+                  </span>
+                  <span>
+                    H<strong className={`ml-0.5 font-semibold ${candleChange >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>{formatAxisPrice(inspectedCandle.high)}</strong>
+                  </span>
+                  <span>
+                    L<strong className={`ml-0.5 font-semibold ${candleChange >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>{formatAxisPrice(inspectedCandle.low)}</strong>
+                  </span>
+                  <span>
+                    C<strong className={`ml-0.5 font-semibold ${candleChange >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>{formatAxisPrice(inspectedCandle.close)}</strong>
+                  </span>
+                  <span className={`hidden md:inline font-semibold ${candleChange >= 0 ? 'text-[#089981]' : 'text-[#F23645]'}`}>
+                    {candleChange >= 0 ? '+' : ''}
+                    {formatAxisPrice(candleChange)} ({candleChange >= 0 ? '+' : ''}
+                    {candleChangePct.toFixed(2)}%)
+                  </span>
                 </div>
-                {[
-                  { label: 'EMA 20 (Aqua)', active: showEma20, toggle: () => setShowEma20(!showEma20) },
-                  { label: 'EMA 50 (Amber)', active: showEma50, toggle: () => setShowEma50(!showEma50) },
-                  { label: 'SMA 200 (Sky)', active: showSma200, toggle: () => setShowSma200(!showSma200) },
-                  { label: 'VWAP (Session)', active: showVwap, toggle: () => setShowVwap(!showVwap) },
-                  { label: 'Bollinger Bands', active: showBBands, toggle: () => setShowBBands(!showBBands) },
-                  { label: 'Supertrend (10,3)', active: showSupertrend, toggle: () => setShowSupertrend(!showSupertrend) },
-                  { label: 'Volume Histogram', active: showVolume, toggle: () => setShowVolume(!showVolume) },
-                ].map((item) => (
-                  <button
-                    key={item.label}
-                    type="button"
-                    onClick={item.toggle}
-                    className={`w-full px-2.5 py-1.5 rounded-[10px] flex items-center justify-between font-semibold cursor-pointer ${
-                      item.active ? 'bg-[#28D6B0]/15 text-[#28D6B0]' : 'text-[#A5B5AE] hover:bg-white/5'
-                    }`}
-                  >
-                    <span>{item.label}</span>
-                    <span>{item.active ? 'ON' : 'OFF'}</span>
-                  </button>
-                ))}
-
-                <div className="text-[10px] font-bold text-[#8B9A92] uppercase px-1 pt-1 border-t border-white/10">
-                  Sub-Panel Oscillator
-                </div>
-                {(
-                  [
-                    { id: 'none', label: 'None' },
-                    { id: 'rsi', label: 'RSI (14)' },
-                    { id: 'macd', label: 'MACD (12, 26, 9)' },
-                    { id: 'atr', label: 'ATR (14)' },
-                  ] as { id: OscillatorMode; label: string }[]
-                ).map((osc) => (
-                  <button
-                    key={osc.id}
-                    type="button"
-                    onClick={() => setOscillator(osc.id)}
-                    className={`w-full px-2.5 py-1.5 rounded-[10px] flex items-center justify-between font-semibold cursor-pointer ${
-                      oscillator === osc.id ? 'bg-[#28D6B0] text-[#04100C] font-bold' : 'text-[#A5B5AE] hover:bg-white/5'
-                    }`}
-                  >
-                    <span>{osc.label}</span>
-                    {oscillator === osc.id && <span>✓</span>}
-                  </button>
-                ))}
               </div>
             )}
+
+            {/* Chart Type + Technical Indicators Toggles */}
+            <div className="pointer-events-auto inline-flex items-center gap-1 flex-wrap">
+              {showDrawingToolbar && (
+                <button
+                  type="button"
+                  onClick={() => setShowMobileDrawingRail((v) => !v)}
+                  className={`sm:hidden px-2 py-1 rounded-[4px] text-[10px] font-semibold border cursor-pointer inline-flex items-center gap-1 ${
+                    showMobileDrawingRail
+                      ? 'bg-[#2962FF]/20 border-[#2962FF] text-[#2962FF]'
+                      : 'bg-[#1E222D]/95 border-[#2A2E39] text-[#D1D4DC]'
+                  }`}
+                >
+                  <Pencil className="w-3 h-3" />
+                  <span>Draw</span>
+                </button>
+              )}
+
+              <select
+                aria-label="Chart Type"
+                value={activeChartType}
+                onChange={(e) => setChartType(e.target.value as ChartTypeMode)}
+                className="px-2 py-1 rounded-[4px] text-[10.5px] font-semibold bg-[#1E222D]/95 border border-[#2A2E39] text-[#D1D4DC] hover:border-[#434651] outline-none cursor-pointer"
+              >
+                <option value="candles">Candles</option>
+                <option value="hollow">Hollow Candles</option>
+                <option value="heikin_ashi">Heikin Ashi</option>
+                <option value="bars">OHLC Bars</option>
+                <option value="area">Area</option>
+                <option value="line">Line</option>
+              </select>
+
+              <button
+                type="button"
+                onClick={() => setShowEma20((v) => !v)}
+                className={`px-2 py-1 rounded-[4px] text-[10.5px] font-semibold border transition-colors cursor-pointer ${
+                  showEma20
+                    ? 'bg-[#2962FF]/20 border-[#2962FF]/60 text-[#5B8DEF]'
+                    : 'bg-[#1E222D]/95 border-[#2A2E39] text-[#787B86] hover:text-[#D1D4DC]'
+                }`}
+              >
+                EMA20
+              </button>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowIndicatorsMenu((v) => !v)}
+                  className="px-2 py-1 rounded-[4px] text-[10.5px] font-semibold border bg-[#1E222D]/95 border-[#2A2E39] text-[#D1D4DC] hover:border-[#434651] hover:text-white cursor-pointer"
+                >
+                  fx Indicators ▾
+                </button>
+
+                {showIndicatorsMenu && (
+                  <div className="absolute right-0 top-7 z-40 w-52 p-2 rounded-[6px] bg-[#1E222D] border border-[#2A2E39] shadow-2xl space-y-1 text-[11px]">
+                    <div className="text-[10px] font-bold text-[#787B86] uppercase px-1.5 py-0.5">
+                      Overlay Indicators
+                    </div>
+                    {[
+                      { label: 'EMA 20 (Blue)', active: showEma20, toggle: () => setShowEma20(!showEma20) },
+                      { label: 'EMA 50 (Amber)', active: showEma50, toggle: () => setShowEma50(!showEma50) },
+                      { label: 'SMA 200 (Sky)', active: showSma200, toggle: () => setShowSma200(!showSma200) },
+                      { label: 'VWAP (Session)', active: showVwap, toggle: () => setShowVwap(!showVwap) },
+                      { label: 'Bollinger Bands', active: showBBands, toggle: () => setShowBBands(!showBBands) },
+                      { label: 'Supertrend (10,3)', active: showSupertrend, toggle: () => setShowSupertrend(!showSupertrend) },
+                      { label: 'Volume Histogram', active: showVolume, toggle: () => setShowVolume(!showVolume) },
+                    ].map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={item.toggle}
+                        className={`w-full px-2 py-1.5 rounded-[4px] flex items-center justify-between font-medium cursor-pointer ${
+                          item.active ? 'bg-[#2962FF]/20 text-[#5B8DEF]' : 'text-[#D1D4DC] hover:bg-[#2A2E39]'
+                        }`}
+                      >
+                        <span>{item.label}</span>
+                        <span className="text-[10px] font-bold">{item.active ? 'ON' : 'OFF'}</span>
+                      </button>
+                    ))}
+
+                    <div className="text-[10px] font-bold text-[#787B86] uppercase px-1.5 pt-1.5 border-t border-[#2A2E39]">
+                      Sub-Panel Oscillator
+                    </div>
+                    {(
+                      [
+                        { id: 'none', label: 'None' },
+                        { id: 'rsi', label: 'RSI (14)' },
+                        { id: 'macd', label: 'MACD (12, 26, 9)' },
+                        { id: 'atr', label: 'ATR (14)' },
+                      ] as { id: OscillatorMode; label: string }[]
+                    ).map((osc) => (
+                      <button
+                        key={osc.id}
+                        type="button"
+                        onClick={() => setOscillator(osc.id)}
+                        className={`w-full px-2 py-1.5 rounded-[4px] flex items-center justify-between font-medium cursor-pointer ${
+                          oscillator === osc.id ? 'bg-[#2962FF] text-white font-bold' : 'text-[#D1D4DC] hover:bg-[#2A2E39]'
+                        }`}
+                      >
+                        <span>{osc.label}</span>
+                        {oscillator === osc.id && <span>✓</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {(Math.abs(panOffset) > 0.5 ||
+                Math.abs(pricePanOffset) > 1e-6 ||
+                Math.abs(priceScaleFactor - 1) > 0.03) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPanOffset(0);
+                    setPricePanOffset(0);
+                    setPriceScaleFactor(1);
+                  }}
+                  className="px-2 py-1 rounded-[4px] text-[10px] font-bold bg-[#2962FF] text-white cursor-pointer"
+                >
+                  Auto →
+                </button>
+              )}
+            </div>
           </div>
 
-          {(Math.abs(panOffset) > 0.5 ||
-            Math.abs(pricePanOffset) > 1e-6 ||
-            Math.abs(priceScaleFactor - 1) > 0.03) && (
+          {/* Row 2: TradingView Signature On-Chart Instant Buy/Sell Execution Widget */}
+          {onExecuteMarketOrder && (
+            <div className="pointer-events-auto inline-flex items-center gap-1 self-start">
+              {showChartTradeButtons ? (
+                <div
+                  data-testid="tv-chart-order-widget"
+                  className="inline-flex items-stretch rounded-[4px] bg-[#1E222D]/92 border border-[#2A2E39] shadow-lg overflow-hidden"
+                >
+                  <button
+                    type="button"
+                    data-testid="tv-chart-sell-btn"
+                    onClick={() => onExecuteMarketOrder('SELL', symbol)}
+                    className="px-2.5 py-1 bg-[#F23645]/15 hover:bg-[#F23645] text-[#F23645] hover:text-white transition-colors flex flex-col items-center justify-center leading-tight cursor-pointer border-r border-[#2A2E39] min-w-[74px]"
+                    title={`Sell ${tradeVolume} Lot ${symbol} @ ${formatAxisPrice(displayBid)}`}
+                  >
+                    <span className="text-[11px] font-bold tabular-nums">{formatAxisPrice(displayBid)}</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-wider opacity-90">SELL</span>
+                  </button>
+
+                  <div className="px-1.5 py-0.5 flex flex-col items-center justify-center bg-[#131722]/90 border-r border-[#2A2E39]">
+                    {onTradeVolumeChange ? (
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        max="100"
+                        aria-label="Chart Quick Trade Lots"
+                        value={tradeVolume}
+                        onChange={(e) => onTradeVolumeChange(e.target.value)}
+                        className="w-11 bg-transparent text-center text-[11px] font-bold text-[#F0F3FA] outline-none tabular-nums"
+                      />
+                    ) : (
+                      <span className="text-[11px] font-bold text-[#F0F3FA] tabular-nums px-1">{tradeVolume}</span>
+                    )}
+                    <span className="text-[8.5px] text-[#787B86] font-semibold tabular-nums leading-none">
+                      Spr {spreadPoints}
+                    </span>
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="tv-chart-buy-btn"
+                    onClick={() => onExecuteMarketOrder('BUY', symbol)}
+                    className="px-2.5 py-1 bg-[#2962FF]/15 hover:bg-[#2962FF] text-[#5B8DEF] hover:text-white transition-colors flex flex-col items-center justify-center leading-tight cursor-pointer min-w-[74px]"
+                    title={`Buy ${tradeVolume} Lot ${symbol} @ ${formatAxisPrice(displayAsk)}`}
+                  >
+                    <span className="text-[11px] font-bold tabular-nums">{formatAxisPrice(displayAsk)}</span>
+                    <span className="text-[9px] font-semibold uppercase tracking-wider opacity-90">BUY</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    title="Collapse Chart Buy/Sell Buttons"
+                    onClick={() => setShowChartTradeButtons(false)}
+                    className="px-1 text-[#787B86] hover:text-white border-l border-[#2A2E39] flex items-center justify-center cursor-pointer"
+                  >
+                    <ChevronUp className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setShowChartTradeButtons(true)}
+                  className="px-2 py-0.5 rounded-[4px] bg-[#1E222D]/90 border border-[#2A2E39] text-[10px] font-semibold text-[#B2B5BE] hover:text-white inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <span>Buy/Sell</span>
+                  <ChevronDown className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Right-Click TradingView Context Menu */}
+        {contextMenu && (
+          <div
+            style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="absolute z-40 w-56 p-1.5 rounded-[6px] bg-[#1E222D] border border-[#2A2E39] shadow-2xl space-y-0.5 text-xs"
+          >
+            <div className="px-2.5 py-1 text-[10px] font-bold text-[#787B86] border-b border-[#2A2E39] tabular-nums">
+              {spec.shortName} @ {formatAxisPrice(contextMenu.price)}
+            </div>
+            {onPlacePendingOrderAtPrice && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onPlacePendingOrderAtPrice('BUY', contextMenu.price, symbol);
+                    setContextMenu(null);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#5B8DEF] hover:bg-[#2962FF]/20 font-semibold cursor-pointer tabular-nums"
+                >
+                  {resolveChartPriceOrderType('BUY', contextMenu.price, displayBid, displayAsk).replace('_', ' ')} ({tradeVolume}L) @ {formatAxisPrice(contextMenu.price)}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onPlacePendingOrderAtPrice('SELL', contextMenu.price, symbol);
+                    setContextMenu(null);
+                  }}
+                  className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#F23645] hover:bg-[#F23645]/20 font-semibold cursor-pointer tabular-nums"
+                >
+                  {resolveChartPriceOrderType('SELL', contextMenu.price, displayBid, displayAsk).replace('_', ' ')} ({tradeVolume}L) @ {formatAxisPrice(contextMenu.price)}
+                </button>
+                <div className="h-px bg-[#2A2E39] my-0.5" />
+              </>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setDrawings((prev) => [
+                  ...prev,
+                  {
+                    id: `draw-${Date.now()}`,
+                    symbol,
+                    tool: 'hline',
+                    t1: Date.now(),
+                    p1: contextMenu.price,
+                    t2: Date.now(),
+                    p2: contextMenu.price,
+                    color: '#2962FF',
+                  },
+                ]);
+                setContextMenu(null);
+              }}
+              className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#D1D4DC] hover:bg-[#2A2E39] font-medium cursor-pointer"
+            >
+              + Draw Horizontal Line
+            </button>
+            {onQuickCreateAlert && (
+              <button
+                type="button"
+                onClick={() => {
+                  onQuickCreateAlert(contextMenu.price);
+                  setContextMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#D1D4DC] hover:bg-[#2A2E39] font-medium cursor-pointer"
+              >
+                Add Alert @ {formatAxisPrice(contextMenu.price)}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
                 setPanOffset(0);
                 setPricePanOffset(0);
                 setPriceScaleFactor(1);
+                setVisibleCount(48);
+                setContextMenu(null);
               }}
-              className="px-2.5 py-1 rounded-[10px] text-[10px] font-bold bg-[#28D6B0] text-[#04100C] cursor-pointer"
+              className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#B2B5BE] hover:bg-[#2A2E39] hover:text-white font-medium cursor-pointer"
             >
-              LIVE / AUTO →
+              Reset Chart View
             </button>
-          )}
-        </div>
-      </div>
-
-      {/* Right-Click Context Menu */}
-      {contextMenu && (
-        <div
-          style={{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }}
-          onMouseDown={(e) => e.stopPropagation()}
-          className="absolute z-40 w-52 p-2 rounded-[16px] bg-[#070C0A]/95 backdrop-blur-md border border-[#28D6B0]/30 shadow-2xl space-y-1 text-xs"
-        >
-          <div className="px-2.5 py-1 text-[10px] font-bold text-[#8B9A92] border-b border-white/10">
-            Price @ {formatAxisPrice(contextMenu.price)}
+            <button
+              type="button"
+              onClick={() => {
+                setHideDrawings((v) => !v);
+                setContextMenu(null);
+              }}
+              className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#B2B5BE] hover:bg-[#2A2E39] hover:text-white font-medium cursor-pointer"
+            >
+              {hideDrawings ? 'Show Drawings' : 'Hide Drawings'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setLockDrawings((v) => !v);
+                setContextMenu(null);
+              }}
+              className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#B2B5BE] hover:bg-[#2A2E39] hover:text-white font-medium cursor-pointer"
+            >
+              {lockDrawings ? 'Unlock Drawings' : 'Lock Drawings'}
+            </button>
+            {redoStack.length > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  handleRedoDrawing();
+                  setContextMenu(null);
+                }}
+                className="w-full px-2.5 py-1.5 rounded-[4px] text-left text-[#B2B5BE] hover:bg-[#2A2E39] hover:text-white font-medium cursor-pointer"
+              >
+                Redo Drawing
+              </button>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              setDrawings((prev) => [
-                ...prev,
-                {
-                  id: `draw-${Date.now()}`,
-                  symbol,
-                  tool: 'hline',
-                  t1: Date.now(),
-                  p1: contextMenu.price,
-                  t2: Date.now(),
-                  p2: contextMenu.price,
-                  color: '#28D6B0',
-                },
-              ]);
-              setContextMenu(null);
-            }}
-            className="w-full px-2.5 py-1.5 rounded-[10px] text-left text-[#F4F8F6] hover:bg-[#28D6B0]/15 hover:text-[#28D6B0] font-medium cursor-pointer"
-          >
-            + Draw Horizontal Line Here
-          </button>
-          {onQuickCreateAlert && (
-            <button
-              type="button"
-              onClick={() => {
-                onQuickCreateAlert(contextMenu.price);
-                setContextMenu(null);
-              }}
-              className="w-full px-2.5 py-1.5 rounded-[10px] text-left text-[#F4F8F6] hover:bg-[#28D6B0]/15 hover:text-[#28D6B0] font-medium cursor-pointer"
+        )}
+
+        {/* Interactive Pending Order Pills on Chart */}
+        {pendingOrders.map((ord) => {
+          const pY = Math.round(priceToY(ord.entryPrice));
+          const showOrd =
+            ord.entryPrice >= priceBounds.minPrice &&
+            ord.entryPrice <= priceBounds.maxPrice &&
+            pY >= 14 &&
+            pY <= plotHeight - 14;
+          if (!showOrd) return null;
+          return (
+            <div
+              key={ord.id}
+              style={{ top: `${pY - 11}px` }}
+              onMouseDown={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              className="absolute left-3 z-10 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-[4px] bg-[#1E222D]/95 border border-[#2962FF]/60 shadow-md text-[10px] font-sans font-bold text-[#D1D4DC] pointer-events-auto"
             >
-              🔔 Set Price Alert @ {formatAxisPrice(contextMenu.price)}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setPanOffset(0);
-              setPricePanOffset(0);
-              setPriceScaleFactor(1);
-              setVisibleCount(48);
-              setContextMenu(null);
-            }}
-            className="w-full px-2.5 py-1.5 rounded-[10px] text-left text-[#A5B5AE] hover:bg-white/5 hover:text-white font-medium cursor-pointer"
-          >
-            Reset Chart &amp; Auto-Scale
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setHideDrawings((v) => !v);
-              setContextMenu(null);
-            }}
-            className="w-full px-2.5 py-1.5 rounded-[10px] text-left text-[#A5B5AE] hover:bg-white/5 hover:text-white font-medium cursor-pointer"
-          >
-            {hideDrawings ? 'Show Drawings' : 'Hide Drawings'}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setLockDrawings((v) => !v);
-              setContextMenu(null);
-            }}
-            className="w-full px-2.5 py-1.5 rounded-[10px] text-left text-[#A5B5AE] hover:bg-white/5 hover:text-white font-medium cursor-pointer"
-          >
-            {lockDrawings ? 'Unlock Drawings' : 'Lock Drawings'}
-          </button>
-          {redoStack.length > 0 && (
-            <button
-              type="button"
-              onClick={() => {
-                handleRedoDrawing();
-                setContextMenu(null);
-              }}
-              className="w-full px-2.5 py-1.5 rounded-[10px] text-left text-[#A5B5AE] hover:bg-white/5 hover:text-white font-medium cursor-pointer"
-            >
-              ↷ Redo Drawing
-            </button>
-          )}
-        </div>
-      )}
+              <span className={ord.side === 'BUY' ? 'text-[#5B8DEF]' : 'text-[#F59E0B]'}>
+                {ord.orderType.replace('_', ' ')} {ord.volume.toFixed(2)}
+              </span>
+              <span className="tabular-nums">@ {formatAxisPrice(ord.entryPrice)}</span>
+              {onCancelPendingOrder && (
+                <button
+                  type="button"
+                  onClick={() => onCancelPendingOrder(ord.id)}
+                  className="ml-0.5 px-1 rounded bg-[#F23645]/20 hover:bg-[#F23645] text-[#F23645] hover:text-white font-bold cursor-pointer"
+                  title="Cancel Pending Order"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          );
+        })}
 
       {/* Interactive On-Chart Position Pills & Moveable SL / TP Drag Lines */}
       {openPositions.map((pos) => {
@@ -2254,18 +2714,18 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                 style={{ top: `${entryY - 12}px` }}
                 onMouseDown={(e) => e.stopPropagation()}
                 onTouchStart={(e) => e.stopPropagation()}
-                className="absolute left-12 z-10 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-[10px] bg-[#0C1411]/95 border border-[#28D6B0]/30 shadow-md text-[10px] font-sans font-bold pointer-events-auto"
+                className="absolute left-3 z-10 inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-[4px] bg-[#1E222D]/95 border border-[#2A2E39] shadow-md text-[10px] font-sans font-bold pointer-events-auto"
               >
                 <span
                   className={`font-extrabold ${
-                    pos.side === 'BUY' ? 'text-[#28D6B0]' : 'text-[#F01650]'
+                    pos.side === 'BUY' ? 'text-[#2962FF]' : 'text-[#F23645]'
                   }`}
                 >
                   {pos.side} {pos.volume.toFixed(2)}
                 </span>
                 <span
                   className={`font-bold tabular-nums ${
-                    isPositive ? 'text-[#28D6B0]' : 'text-[#F01650]'
+                    isPositive ? 'text-[#089981]' : 'text-[#F23645]'
                   }`}
                 >
                   {isPositive ? '+' : ''}${pos.netPnl.toFixed(2)}
@@ -2274,7 +2734,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                   <button
                     type="button"
                     onClick={() => handleQuickAddSlOrTp(pos, 'SL')}
-                    className="px-1.5 py-0.2 rounded-[6px] bg-[#F01650]/15 border border-[#F01650]/40 text-[#F01650] hover:bg-[#F01650] hover:text-white font-bold text-[9px] cursor-pointer"
+                    className="px-1.5 py-0.2 rounded-[3px] bg-[#F23645]/15 border border-[#F23645]/40 text-[#F23645] hover:bg-[#F23645] hover:text-white font-bold text-[9px] cursor-pointer"
                     title="Add Stop Loss to Chart"
                   >
                     +SL
@@ -2284,7 +2744,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                   <button
                     type="button"
                     onClick={() => handleQuickAddSlOrTp(pos, 'TP')}
-                    className="px-1.5 py-0.2 rounded-[6px] bg-[#28D6B0]/15 border border-[#28D6B0]/40 text-[#28D6B0] hover:bg-[#28D6B0] hover:text-[#04100C] font-bold text-[9px] cursor-pointer"
+                    className="px-1.5 py-0.2 rounded-[3px] bg-[#089981]/15 border border-[#089981]/40 text-[#089981] hover:bg-[#089981] hover:text-white font-bold text-[9px] cursor-pointer"
                     title="Add Take Profit to Chart"
                   >
                     +TP
@@ -2294,7 +2754,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                   <button
                     type="button"
                     onClick={() => onEditPositionModal(pos)}
-                    className="px-1.5 py-0.2 rounded-[6px] bg-[#090F0D] border border-white/15 text-[#A5B5AE] hover:text-white font-bold text-[9px] cursor-pointer"
+                    className="px-1.5 py-0.2 rounded-[3px] bg-[#131722] border border-[#2A2E39] text-[#B2B5BE] hover:text-white font-bold text-[9px] cursor-pointer"
                     title="Edit Stop Loss & Take Profit"
                   >
                     SL/TP
@@ -2304,7 +2764,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                   <button
                     type="button"
                     onClick={() => onClosePosition(pos.id)}
-                    className="ml-0.5 px-1.5 rounded-[6px] bg-[#F01650]/20 hover:bg-[#F01650] text-[#F01650] hover:text-white font-bold transition-colors cursor-pointer"
+                    className="ml-0.5 px-1.5 rounded-[3px] bg-[#F23645]/20 hover:bg-[#F23645] text-[#F23645] hover:text-white font-bold transition-colors cursor-pointer"
                     title="Close Position"
                   >
                     ×
@@ -2320,10 +2780,10 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                 data-testid={`chart-sl-line-${pos.id}`}
                 onMouseDown={(e) => startSlTpDrag(pos.id, 'SL', effectiveSlPrice, e)}
                 onTouchStart={(e) => startSlTpDrag(pos.id, 'SL', effectiveSlPrice, e)}
-                className={`absolute right-[76px] z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-[9px] bg-[#0C1411]/95 border shadow-md text-[9.5px] font-sans font-bold text-[#F01650] pointer-events-auto cursor-ns-resize select-none transition-shadow ${
+                className={`absolute right-[80px] z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-[4px] bg-[#1E222D]/95 border shadow-md text-[9.5px] font-sans font-bold text-[#F23645] pointer-events-auto cursor-ns-resize select-none transition-shadow ${
                   draggingSlTp?.orderId === pos.id && draggingSlTp?.type === 'SL'
-                    ? 'border-[#F01650] ring-2 ring-[#F01650]/40 scale-[1.03]'
-                    : 'border-[#F01650]/45 hover:border-[#F01650]'
+                    ? 'border-[#F23645] ring-2 ring-[#F23645]/40 scale-[1.03]'
+                    : 'border-[#F23645]/55 hover:border-[#F23645]'
                 }`}
                 title="Drag Up/Down to Move Stop Loss"
               >
@@ -2341,7 +2801,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                       e.stopPropagation();
                       onModifyPositionSlTp(pos.id, 0, pos.takeProfit);
                     }}
-                    className="ml-0.5 px-1 rounded bg-[#F01650]/20 hover:bg-[#F01650] text-[#F01650] hover:text-white font-extrabold transition-colors cursor-pointer"
+                    className="ml-0.5 px-1 rounded bg-[#F23645]/20 hover:bg-[#F23645] text-[#F23645] hover:text-white font-extrabold transition-colors cursor-pointer"
                     title="Remove Stop Loss (SL)"
                   >
                     ×
@@ -2357,10 +2817,10 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                 data-testid={`chart-tp-line-${pos.id}`}
                 onMouseDown={(e) => startSlTpDrag(pos.id, 'TP', effectiveTpPrice, e)}
                 onTouchStart={(e) => startSlTpDrag(pos.id, 'TP', effectiveTpPrice, e)}
-                className={`absolute right-[76px] z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-[9px] bg-[#0C1411]/95 border shadow-md text-[9.5px] font-sans font-bold text-[#28D6B0] pointer-events-auto cursor-ns-resize select-none transition-shadow ${
+                className={`absolute right-[80px] z-20 inline-flex items-center gap-1 px-2 py-0.5 rounded-[4px] bg-[#1E222D]/95 border shadow-md text-[9.5px] font-sans font-bold text-[#089981] pointer-events-auto cursor-ns-resize select-none transition-shadow ${
                   draggingSlTp?.orderId === pos.id && draggingSlTp?.type === 'TP'
-                    ? 'border-[#28D6B0] ring-2 ring-[#28D6B0]/40 scale-[1.03]'
-                    : 'border-[#28D6B0]/45 hover:border-[#28D6B0]'
+                    ? 'border-[#089981] ring-2 ring-[#089981]/40 scale-[1.03]'
+                    : 'border-[#089981]/55 hover:border-[#089981]'
                 }`}
                 title="Drag Up/Down to Move Take Profit"
               >
@@ -2378,7 +2838,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
                       e.stopPropagation();
                       onModifyPositionSlTp(pos.id, pos.stopLoss, 0);
                     }}
-                    className="ml-0.5 px-1 rounded bg-[#28D6B0]/20 hover:bg-[#28D6B0] text-[#28D6B0] hover:text-[#04100C] font-extrabold transition-colors cursor-pointer"
+                    className="ml-0.5 px-1 rounded bg-[#089981]/20 hover:bg-[#089981] text-[#089981] hover:text-white font-extrabold transition-colors cursor-pointer"
                     title="Remove Take Profit (TP)"
                   >
                     ×
@@ -2389,6 +2849,7 @@ export const ApexLiveCandlestickChart: React.FC<ApexLiveCandlestickChartProps> =
           </React.Fragment>
         );
       })}
+      </div>
     </div>
   );
 });

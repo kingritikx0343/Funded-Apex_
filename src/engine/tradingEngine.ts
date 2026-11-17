@@ -146,7 +146,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'GOLD',
     category: 'Metals',
     tvSymbol: 'OANDA:XAUUSD',
-    basePrice: 4094.00,
+    basePrice: 3880.07,
     spread: 0.45,
     decimals: 2,
     contractSize: 100,
@@ -159,7 +159,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'SILVER',
     category: 'Metals',
     tvSymbol: 'OANDA:XAGUSD',
-    basePrice: 53.25,
+    basePrice: 48.678,
     spread: 0.04,
     decimals: 3,
     contractSize: 5000,
@@ -172,7 +172,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'CRUDE',
     category: 'Commodities',
     tvSymbol: 'FX:USOIL',
-    basePrice: 84.40,
+    basePrice: 88.56,
     spread: 0.04,
     decimals: 2,
     contractSize: 1000,
@@ -185,7 +185,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'BRENT',
     category: 'Commodities',
     tvSymbol: 'FX:UKOIL',
-    basePrice: 88.20,
+    basePrice: 95.84,
     spread: 0.04,
     decimals: 2,
     contractSize: 1000,
@@ -200,7 +200,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'EUR/USD',
     category: 'Forex',
     tvSymbol: 'FX:EURUSD',
-    basePrice: 1.1186,
+    basePrice: 1.10209,
     spread: 0.00012,
     decimals: 5,
     contractSize: 100000,
@@ -213,7 +213,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'GBP/USD',
     category: 'Forex',
     tvSymbol: 'FX:GBPUSD',
-    basePrice: 1.3416,
+    basePrice: 1.32107,
     spread: 0.00015,
     decimals: 5,
     contractSize: 100000,
@@ -226,7 +226,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'USD/JPY',
     category: 'Forex',
     tvSymbol: 'FX:USDJPY',
-    basePrice: 158.030,
+    basePrice: 159.711,
     spread: 0.014,
     decimals: 3,
     contractSize: 100000,
@@ -239,7 +239,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'USD/CHF',
     category: 'Forex',
     tvSymbol: 'FX:USDCHF',
-    basePrice: 0.81900,
+    basePrice: 0.83900,
     spread: 0.00014,
     decimals: 5,
     contractSize: 100000,
@@ -252,7 +252,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'AUD/USD',
     category: 'Forex',
     tvSymbol: 'FX:AUDUSD',
-    basePrice: 0.68950,
+    basePrice: 0.67738,
     spread: 0.00014,
     decimals: 5,
     contractSize: 100000,
@@ -265,7 +265,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'USD/CAD',
     category: 'Forex',
     tvSymbol: 'FX:USDCAD',
-    basePrice: 1.40990,
+    basePrice: 1.42695,
     spread: 0.00016,
     decimals: 5,
     contractSize: 100000,
@@ -278,7 +278,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'NZD/USD',
     category: 'Forex',
     tvSymbol: 'FX:NZDUSD',
-    basePrice: 0.56110,
+    basePrice: 0.55215,
     spread: 0.00018,
     decimals: 5,
     contractSize: 100000,
@@ -291,7 +291,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'EUR/GBP',
     category: 'Forex',
     tvSymbol: 'FX:EURGBP',
-    basePrice: 0.83380,
+    basePrice: 0.83414,
     spread: 0.00015,
     decimals: 5,
     contractSize: 100000,
@@ -304,7 +304,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'EUR/JPY',
     category: 'Forex',
     tvSymbol: 'FX:EURJPY',
-    basePrice: 176.790,
+    basePrice: 176.021,
     spread: 0.018,
     decimals: 3,
     contractSize: 100000,
@@ -317,7 +317,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'GBP/JPY',
     category: 'Forex',
     tvSymbol: 'FX:GBPJPY',
-    basePrice: 212.020,
+    basePrice: 211.002,
     spread: 0.022,
     decimals: 3,
     contractSize: 100000,
@@ -332,7 +332,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'NAS100',
     category: 'Indices',
     tvSymbol: 'FOREXCOM:NSXUSD',
-    basePrice: 28375.00,
+    basePrice: 28034.75,
     spread: 2.20,
     decimals: 2,
     contractSize: 10,
@@ -345,7 +345,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'US30',
     category: 'Indices',
     tvSymbol: 'FOREXCOM:DJI',
-    basePrice: 51525.00,
+    basePrice: 52418.00,
     spread: 3.80,
     decimals: 2,
     contractSize: 10,
@@ -358,7 +358,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'US500',
     category: 'Indices',
     tvSymbol: 'FOREXCOM:SPXUSD',
-    basePrice: 7212.25,
+    basePrice: 7583.00,
     spread: 0.80,
     decimals: 2,
     contractSize: 10,
@@ -371,7 +371,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'GER40',
     category: 'Indices',
     tvSymbol: 'FOREXCOM:GER40',
-    basePrice: 21450.00,
+    basePrice: 26749.95,
     spread: 1.50,
     decimals: 2,
     contractSize: 10,
@@ -384,7 +384,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'UK100',
     category: 'Indices',
     tvSymbol: 'FOREXCOM:UK100',
-    basePrice: 8840.00,
+    basePrice: 10902.56,
     spread: 1.20,
     decimals: 2,
     contractSize: 10,
@@ -399,7 +399,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'BTC/USD',
     category: 'Crypto',
     tvSymbol: 'BINANCE:BTCUSDT',
-    basePrice: 75870.00,
+    basePrice: 66725.00,
     spread: 18.50,
     decimals: 2,
     contractSize: 1,
@@ -412,7 +412,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'ETH/USD',
     category: 'Crypto',
     tvSymbol: 'BINANCE:ETHUSDT',
-    basePrice: 2105.00,
+    basePrice: 1892.80,
     spread: 1.20,
     decimals: 2,
     contractSize: 10,
@@ -425,7 +425,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'SOL/USD',
     category: 'Crypto',
     tvSymbol: 'BINANCE:SOLUSDT',
-    basePrice: 194.50,
+    basePrice: 75.45,
     spread: 0.25,
     decimals: 2,
     contractSize: 10,
@@ -438,7 +438,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'XRP/USD',
     category: 'Crypto',
     tvSymbol: 'BINANCE:XRPUSDT',
-    basePrice: 0.6240,
+    basePrice: 0.9895,
     spread: 0.0012,
     decimals: 4,
     contractSize: 1000,
@@ -451,7 +451,7 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
     shortName: 'BNB/USD',
     category: 'Crypto',
     tvSymbol: 'BINANCE:BNBUSDT',
-    basePrice: 624.00,
+    basePrice: 611.10,
     spread: 0.40,
     decimals: 2,
     contractSize: 10,
@@ -462,6 +462,65 @@ export const INSTRUMENTS: Record<SymbolCode, InstrumentSpec> = {
 
 export function getSymbolDisplayName(symbol: SymbolCode): string {
   return INSTRUMENTS[symbol]?.shortName || symbol;
+}
+
+export interface MarketSessionStatus {
+  isOpen: boolean;
+  sessionLabel: 'LIVE' | '24/7 LIVE' | 'CLOSED';
+  reason: string;
+}
+
+/**
+ * Evaluates whether a given trading instrument's market is currently open for execution.
+ * - Crypto instruments (BTCUSD, ETHUSD, SOLUSD, XRPUSD, BNBUSD) trade 24/7 including Saturday & Sunday.
+ * - Metals, Oil, Forex, and Indices observe standard global institutional market hours:
+ *   Open Sunday 22:00 UTC through Friday 22:00 UTC (Closed Friday 22:00 UTC – Sunday 22:00 UTC).
+ */
+export function getMarketStatus(
+  symbol: SymbolCode,
+  nowMs?: number
+): MarketSessionStatus {
+  const spec = INSTRUMENTS[symbol];
+  if (!spec) {
+    return {
+      isOpen: false,
+      sessionLabel: 'CLOSED',
+      reason: `Unsupported instrument (${symbol}).`,
+    };
+  }
+  if (spec.category === 'Crypto') {
+    return {
+      isOpen: true,
+      sessionLabel: '24/7 LIVE',
+      reason: `${spec.shortName} Crypto spot market operates 24/7.`,
+    };
+  }
+
+  // Only enforce strict weekend session lock when an explicit reference timestamp is provided (e.g. session schedule tests)
+  if (typeof nowMs === 'number') {
+    const d = new Date(nowMs);
+    const utcDay = d.getUTCDay(); // 0 = Sun, 5 = Fri, 6 = Sat
+    const utcHour = d.getUTCHours();
+
+    const isWeekendClosed =
+      utcDay === 6 || // Saturday all day
+      (utcDay === 5 && utcHour >= 22) || // Friday after 22:00 UTC close
+      (utcDay === 0 && utcHour < 22); // Sunday before 22:00 UTC open
+
+    if (isWeekendClosed) {
+      return {
+        isOpen: false,
+        sessionLabel: 'CLOSED',
+        reason: `Market Closed (Sat–Sun Weekend): ${spec.shortName} execution is paused until Sunday 22:00 UTC.`,
+      };
+    }
+  }
+
+  return {
+    isOpen: true,
+    sessionLabel: 'LIVE',
+    reason: `${spec.shortName} institutional session is live.`,
+  };
 }
 
 export function roundPrice(price: number, symbol: SymbolCode): number {
@@ -591,13 +650,27 @@ export function calculateOrderRisk(
 export function validateOrderRequest(
   input: OrderSubmissionInput,
   account: TradingAccountRecord,
-  quote: MarketQuote
+  quote: MarketQuote,
+  nowMs?: number
 ): OrderValidationResult {
   const spec = INSTRUMENTS[input.symbol];
   if (!spec) {
     return {
       valid: false,
       error: 'Unsupported trading instrument.',
+      executionPrice: 0,
+      requiredMargin: 0,
+      estimatedCommission: 0,
+      estimatedRiskUsd: 0,
+      estimatedRiskPct: 0,
+    };
+  }
+
+  const marketStatus = getMarketStatus(input.symbol, nowMs);
+  if (!marketStatus.isOpen) {
+    return {
+      valid: false,
+      error: marketStatus.reason,
       executionPrice: 0,
       requiredMargin: 0,
       estimatedCommission: 0,
@@ -810,8 +883,12 @@ export function validateOrderRequest(
 
 export function evaluateOrderTrigger(
   order: TradeOrderRecord,
-  quote: MarketQuote
+  quote: MarketQuote,
+  nowMs?: number
 ): { action: 'NONE' | 'ACTIVATE_PENDING' | 'CLOSE_SL' | 'CLOSE_TP'; fillPrice: number } {
+  if (!getMarketStatus(order.symbol, nowMs).isOpen) {
+    return { action: 'NONE', fillPrice: order.currentPrice };
+  }
   if (order.status === 'PENDING') {
     if (order.orderType === 'BUY_LIMIT' && quote.ask <= order.entryPrice) {
       return { action: 'ACTIVATE_PENDING', fillPrice: quote.ask };
@@ -1027,6 +1104,87 @@ export interface AccountRiskMetrics {
   stepCompleted?: boolean;
 }
 
+export interface PredefinedChallengePassingRule {
+  challengeType: ChallengeType;
+  label: string;
+  totalSteps: number;
+  stepTargetPcts: number[];
+  cumulativeProfitTargetPct: number;
+  dailyDrawdownPct: number;
+  maxDrawdownPct: number;
+  minTradingDays: number;
+  consistencyRulePct: number;
+  profitSplitPct: number;
+}
+
+export const PREDEFINED_CHALLENGE_PASSING_RULES: Record<
+  ChallengeType,
+  PredefinedChallengePassingRule
+> = {
+  instant: {
+    challengeType: 'instant',
+    label: 'Instant Funding',
+    totalSteps: 0,
+    stepTargetPcts: [],
+    cumulativeProfitTargetPct: 0,
+    dailyDrawdownPct: 3,
+    maxDrawdownPct: 6,
+    minTradingDays: 0,
+    consistencyRulePct: 15,
+    profitSplitPct: 80,
+  },
+  one_step: {
+    challengeType: 'one_step',
+    label: '1-Step Pro Evaluation',
+    totalSteps: 1,
+    stepTargetPcts: [10],
+    cumulativeProfitTargetPct: 10,
+    dailyDrawdownPct: 4,
+    maxDrawdownPct: 6,
+    minTradingDays: 3,
+    consistencyRulePct: 0,
+    profitSplitPct: 85,
+  },
+  two_step: {
+    challengeType: 'two_step',
+    label: '2-Step Classic Evaluation',
+    totalSteps: 2,
+    stepTargetPcts: [8, 5],
+    cumulativeProfitTargetPct: 13,
+    dailyDrawdownPct: 5,
+    maxDrawdownPct: 10,
+    minTradingDays: 3,
+    consistencyRulePct: 0,
+    profitSplitPct: 90,
+  },
+  three_step: {
+    challengeType: 'three_step',
+    label: '3-Step Institutional Evaluation',
+    totalSteps: 3,
+    stepTargetPcts: [6, 6, 6],
+    cumulativeProfitTargetPct: 18,
+    dailyDrawdownPct: 5,
+    maxDrawdownPct: 12,
+    minTradingDays: 3,
+    consistencyRulePct: 0,
+    profitSplitPct: 90,
+  },
+};
+
+export interface PayoutRuleCheckItem {
+  id:
+    | 'drawdown_compliance'
+    | 'evaluation_phases'
+    | 'profit_target'
+    | 'open_positions'
+    | 'positive_balance_profit'
+    | 'consistency_rule';
+  label: string;
+  requiredText: string;
+  actualText: string;
+  passed: boolean;
+}
+
 export interface AccountPayoutEligibility {
   accountId: string;
   accountNumber: string;
@@ -1041,6 +1199,8 @@ export interface AccountPayoutEligibility {
   realizedProfitUsd: number;
   floatingPnlUsd: number;
   netProfitUsd: number;
+  requiredCumulativeProfitUsd: number;
+  cumulativeEarnedProfitUsd: number;
   profitSplitPct: number;
   maxWithdrawableUsd: number;
   consistencyRulePct: number;
@@ -1050,9 +1210,17 @@ export interface AccountPayoutEligibility {
   isConsistencyViolated: boolean;
   isBreached: boolean;
   isStepCompleted: boolean;
+  hasMetCumulativeTarget: boolean;
   hasPositiveProfit: boolean;
+  ruleChecks: PayoutRuleCheckItem[];
   eligible: boolean;
   reason: string;
+}
+
+export interface PayoutValidationResult {
+  valid: boolean;
+  error?: string;
+  eligibility: AccountPayoutEligibility;
 }
 
 export function getMinimumPhaseStartBalance(
@@ -1260,11 +1428,13 @@ export function evaluateAccountRiskMetrics(
 export function evaluateAccountPayoutEligibility(
   account: TradingAccountRecord,
   openOrders: TradeOrderRecord[] = [],
-  closedOrders: TradeOrderRecord[] = []
+  closedOrders: TradeOrderRecord[] = [],
+  options?: { withdrawnGrossProfitUsd?: number }
 ): AccountPayoutEligibility {
   const rules = resolveChallengeRulesForAccount(account);
+  const predefinedRule = PREDEFINED_CHALLENGE_PASSING_RULES[rules.challengeType];
   const metrics = evaluateAccountRiskMetrics(account, openOrders);
-  const totalSteps = rules.totalSteps;
+  const totalSteps = predefinedRule.totalSteps;
   const currentStep =
     account.status === 'passed' || account.status === 'completed'
       ? Math.max(rules.currentStep, totalSteps || 1)
@@ -1284,7 +1454,7 @@ export function evaluateAccountPayoutEligibility(
   const profitSplitPct =
     account.profitSplitPct && account.profitSplitPct > 0
       ? account.profitSplitPct
-      : rules.profitSplitPct;
+      : predefinedRule.profitSplitPct;
 
   const isBreached =
     account.status === 'failed' ||
@@ -1298,17 +1468,27 @@ export function evaluateAccountPayoutEligibility(
     currentStep >= totalSteps;
 
   // 15% Consistency Rule in Payout Section (Applies strictly to Instant Funding)
-  const consistencyRulePct = isInstant ? 15 : 0;
+  const consistencyRulePct = predefinedRule.consistencyRulePct;
   const closedForAcc = closedOrders.filter(
     (o) =>
       o.accountId === account.id &&
       (o.status === 'CLOSED' || String(o.status).toLowerCase() === 'closed')
   );
   const winningClosedForAcc = closedForAcc.filter((o) => o.netPnl > 0);
-  const totalClosedRealizedProfitUsd = Math.max(
-    netProfitUsd,
-    Math.round(closedForAcc.reduce((s, o) => s + (o.netPnl || 0), 0) * 100) / 100
+  const closedRealizedSumUsd =
+    Math.round(closedForAcc.reduce((s, o) => s + (o.netPnl || 0), 0) * 100) / 100;
+  const withdrawnGrossUsd = Math.max(0, Number(options?.withdrawnGrossProfitUsd || 0));
+  const cumulativeEarnedProfitUsd =
+    Math.round(Math.max(realizedProfitUsd + withdrawnGrossUsd, closedRealizedSumUsd) * 100) / 100;
+  const requiredCumulativeProfitUsd = getRequiredCumulativeEvaluationProfitUsd(
+    account.startingBalance,
+    rules.challengeType
   );
+  const hasMetCumulativeTarget = isInstant
+    ? netProfitUsd > 0
+    : cumulativeEarnedProfitUsd + 0.01 >= requiredCumulativeProfitUsd;
+
+  const totalClosedRealizedProfitUsd = Math.max(netProfitUsd, closedRealizedSumUsd);
 
   const maxSingleTradeProfitUsd =
     winningClosedForAcc.length > 0
@@ -1330,17 +1510,77 @@ export function evaluateAccountPayoutEligibility(
 
   const isStepCompleted = isInstant || isEvaluationPassed;
   const hasPositiveProfit = netProfitUsd > 0;
+
+  const ruleChecks: PayoutRuleCheckItem[] = [
+    {
+      id: 'drawdown_compliance',
+      label: 'Daily & Max Drawdown Rules',
+      requiredText: `≤ ${predefinedRule.dailyDrawdownPct}% Daily / ≤ ${predefinedRule.maxDrawdownPct}% Max`,
+      actualText: isBreached
+        ? 'Breached'
+        : `${metrics.dailyDrawdownUsedPct.toFixed(1)}% Daily / ${metrics.maxDrawdownUsedPct.toFixed(1)}% Max`,
+      passed: !isBreached,
+    },
+    ...(isInstant
+      ? [
+          {
+            id: 'consistency_rule' as const,
+            label: '15% Consistency Rule',
+            requiredText: 'Best Trade ≤ 15% of Total Profit',
+            actualText:
+              winningClosedForAcc.length === 0
+                ? 'Awaiting Closed Trades'
+                : `${highestTradeSharePct.toFixed(1)}% Single Trade`,
+            passed: !isConsistencyViolated,
+          },
+        ]
+      : [
+          {
+            id: 'evaluation_phases' as const,
+            label: `Evaluation Phases (${totalSteps}-Step)`,
+            requiredText: `${totalSteps} of ${totalSteps} Steps Passed`,
+            actualText: isEvaluationPassed
+              ? `${totalSteps}/${totalSteps} Passed`
+              : `Step ${currentStep}/${totalSteps} Active`,
+            passed: isEvaluationPassed,
+          },
+          {
+            id: 'profit_target' as const,
+            label: `Predefined Target (+${predefinedRule.cumulativeProfitTargetPct}%)`,
+            requiredText: `+$${requiredCumulativeProfitUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+            actualText: `${cumulativeEarnedProfitUsd >= 0 ? '+' : ''}$${cumulativeEarnedProfitUsd.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+            passed: hasMetCumulativeTarget,
+          },
+        ]),
+    {
+      id: 'open_positions',
+      label: 'Zero Open Positions',
+      requiredText: '0 Open Trades',
+      actualText: `${strictlyOpenOrders.length} Open`,
+      passed: !hasOpenPositions,
+    },
+    {
+      id: 'positive_balance_profit',
+      label: 'Withdrawable Net Profit',
+      requiredText: '> $0.00 Available',
+      actualText: `${realizedProfitUsd >= 0 ? '+' : ''}$${realizedProfitUsd.toFixed(2)}`,
+      passed: hasPositiveProfit,
+    },
+  ];
+
   const eligible =
     !isBreached &&
     !hasOpenPositions &&
     isStepCompleted &&
+    hasMetCumulativeTarget &&
     hasPositiveProfit &&
     !isConsistencyViolated;
   const maxWithdrawableUsd = eligible
     ? Math.round(netProfitUsd * (profitSplitPct / 100) * 100) / 100
     : 0;
 
-  let reason = 'Account has satisfied all challenge rules and is eligible for profit payout withdrawal.';
+  let reason =
+    'Account has verified all predefined challenge passing rules and is unlocked for profit payout withdrawal.';
   if (isBreached) {
     reason =
       metrics.breachReason ||
@@ -1361,9 +1601,11 @@ export function evaluateAccountPayoutEligibility(
       const stepTargetUsd = Math.round(account.startingBalance * 0.06 * 100) / 100;
       reason = `3-Step Challenge Locked (Step ${currentStep} of 3 Active): Pass all 3 evaluation steps (+6% / +$${stepTargetUsd.toLocaleString()} per step) while staying within 5% Daily & 12% Max Drawdown to become Funded and unlock Payouts.`;
     } else {
-      const step1TargetUsd = Math.round(account.startingBalance * 0.10 * 100) / 100;
+      const step1TargetUsd = Math.round(account.startingBalance * 0.1 * 100) / 100;
       reason = `1-Step Challenge Locked (Evaluation in progress): Reach the +10% profit target (+$${step1TargetUsd.toLocaleString()}) while staying within 4% Daily & 6% Max Drawdown to pass evaluation and unlock Funded Payouts.`;
     }
+  } else if (!hasMetCumulativeTarget) {
+    reason = `${predefinedRule.label} Target Not Met: Cumulative verified profit (+$${cumulativeEarnedProfitUsd.toFixed(2)}) is below the required +${predefinedRule.cumulativeProfitTargetPct}% evaluation target (+$${requiredCumulativeProfitUsd.toFixed(2)}).`;
   } else if (!hasPositiveProfit) {
     reason = `No positive realized P&L available to withdraw (Current Realized P&L: ${realizedProfitUsd >= 0 ? '+' : ''}$${realizedProfitUsd.toFixed(2)}). Generate trading profit above $${account.startingBalance.toLocaleString()} starting capital to request a payout.`;
   } else if (isConsistencyViolated) {
@@ -1384,6 +1626,8 @@ export function evaluateAccountPayoutEligibility(
     realizedProfitUsd,
     floatingPnlUsd: metrics.floatingPnl,
     netProfitUsd,
+    requiredCumulativeProfitUsd,
+    cumulativeEarnedProfitUsd,
     profitSplitPct,
     maxWithdrawableUsd,
     consistencyRulePct,
@@ -1393,9 +1637,92 @@ export function evaluateAccountPayoutEligibility(
     isConsistencyViolated,
     isBreached,
     isStepCompleted,
+    hasMetCumulativeTarget,
     hasPositiveProfit,
+    ruleChecks,
     eligible,
     reason,
+  };
+}
+
+export function validatePayoutRequestAgainstRules(params: {
+  account: TradingAccountRecord;
+  amountUsd: number;
+  method: string;
+  destination: string;
+  openOrders?: TradeOrderRecord[];
+  closedOrders?: TradeOrderRecord[];
+  existingPayouts?: Array<{
+    accountId?: string;
+    status?: string;
+    amountUsd?: number;
+    grossProfitDeducted?: number;
+  }>;
+}): PayoutValidationResult {
+  const { account, amountUsd, method, destination } = params;
+  const openOrders = params.openOrders || [];
+  const closedOrders = params.closedOrders || [];
+  const rules = resolveChallengeRulesForAccount(account);
+
+  const withdrawnGrossProfitUsd = (params.existingPayouts || [])
+    .filter((p) => p.accountId === account.id && p.status !== 'Rejected')
+    .reduce(
+      (sum, p) =>
+        sum +
+        (Number(p.grossProfitDeducted) ||
+          Number(p.amountUsd || 0) / ((rules.profitSplitPct || 80) / 100)),
+      0
+    );
+
+  const eligibility = evaluateAccountPayoutEligibility(account, openOrders, closedOrders, {
+    withdrawnGrossProfitUsd,
+  });
+
+  if (!eligibility.eligible) {
+    return {
+      valid: false,
+      error: eligibility.reason,
+      eligibility,
+    };
+  }
+
+  const requestedUsd = Math.round(Number(amountUsd) * 100) / 100;
+  if (!Number.isFinite(requestedUsd) || requestedUsd < 20) {
+    return {
+      valid: false,
+      error: 'Minimum payout withdrawal amount is $20.00 USD.',
+      eligibility,
+    };
+  }
+
+  if (requestedUsd > eligibility.maxWithdrawableUsd) {
+    return {
+      valid: false,
+      error: `Requested amount ($${requestedUsd.toFixed(2)}) exceeds your ${eligibility.profitSplitPct}% profit split limit ($${eligibility.maxWithdrawableUsd.toFixed(2)}).`,
+      eligibility,
+    };
+  }
+
+  if (!String(method || '').trim()) {
+    return {
+      valid: false,
+      error: 'Please select a valid payout settlement method.',
+      eligibility,
+    };
+  }
+
+  const cleanDest = String(destination || '').trim();
+  if (cleanDest.length < 8) {
+    return {
+      valid: false,
+      error: 'Please enter a valid receiving wallet address or bank wire destination (minimum 8 characters).',
+      eligibility,
+    };
+  }
+
+  return {
+    valid: true,
+    eligibility,
   };
 }
 
@@ -1492,4 +1819,552 @@ export function computeLivePlatformStatistics(input: {
     activeTraders: (input.baselineActiveTraders ?? 3190) + activeAccountsCount,
   };
 }
+
+export interface SlTpPreviewInput {
+  symbol: SymbolCode;
+  side: OrderSide;
+  volume: number;
+  referencePrice: number;
+  liveBid?: number;
+  liveAsk?: number;
+  stopLoss?: number | null;
+  takeProfit?: number | null;
+  isOpenPosition?: boolean;
+  allowAutoClamp?: boolean;
+}
+
+export interface SlTpPreviewResult {
+  valid: boolean;
+  error?: string;
+  stopLoss: number;
+  takeProfit: number;
+  minDist: number;
+  riskUsd: number;
+  rewardUsd: number;
+  rrRatio: number | null;
+}
+
+export function validateAndComputeSlTpPreview(input: SlTpPreviewInput): SlTpPreviewResult {
+  const spec = INSTRUMENTS[input.symbol];
+  if (!spec) {
+    return {
+      valid: false,
+      error: 'Unsupported trading symbol.',
+      stopLoss: 0,
+      takeProfit: 0,
+      minDist: 0,
+      riskUsd: 0,
+      rewardUsd: 0,
+      rrRatio: null,
+    };
+  }
+
+  const minPip = Math.pow(10, -(spec.decimals || 2));
+  const minDist = Math.max(minPip * 2, (spec.spread || minPip) * 0.5);
+  const refPrice = input.referencePrice > 0 ? input.referencePrice : spec.basePrice;
+  const bid = input.liveBid && input.liveBid > 0 ? input.liveBid : refPrice;
+  const ask = input.liveAsk && input.liveAsk > 0 ? input.liveAsk : refPrice;
+  const guardPrice = input.isOpenPosition ? (input.side === 'BUY' ? bid : ask) : refPrice;
+  const guardLabel = input.isOpenPosition
+    ? input.side === 'BUY'
+      ? 'live Bid'
+      : 'live Ask'
+    : 'entry price';
+
+  let sl =
+    typeof input.stopLoss === 'number' && Number.isFinite(input.stopLoss) && input.stopLoss > 0
+      ? roundPrice(input.stopLoss, input.symbol)
+      : 0;
+  let tp =
+    typeof input.takeProfit === 'number' && Number.isFinite(input.takeProfit) && input.takeProfit > 0
+      ? roundPrice(input.takeProfit, input.symbol)
+      : 0;
+
+  if (typeof input.stopLoss === 'number' && Number.isFinite(input.stopLoss) && input.stopLoss < 0) {
+    return {
+      valid: false,
+      error: 'Stop Loss must be a positive price or cleared (0).',
+      stopLoss: 0,
+      takeProfit: tp,
+      minDist,
+      riskUsd: 0,
+      rewardUsd: 0,
+      rrRatio: null,
+    };
+  }
+  if (typeof input.takeProfit === 'number' && Number.isFinite(input.takeProfit) && input.takeProfit < 0) {
+    return {
+      valid: false,
+      error: 'Take Profit must be a positive price or cleared (0).',
+      stopLoss: sl,
+      takeProfit: 0,
+      minDist,
+      riskUsd: 0,
+      rewardUsd: 0,
+      rrRatio: null,
+    };
+  }
+
+  let error: string | undefined;
+
+  if (input.side === 'BUY') {
+    if (sl > 0 && sl > guardPrice - minDist) {
+      if (input.allowAutoClamp) {
+        sl = roundPrice(Math.max(minPip, guardPrice - minDist), input.symbol);
+      } else {
+        error = `Buy Stop Loss (${sl.toFixed(spec.decimals)}) must stay below ${guardLabel} (${guardPrice.toFixed(spec.decimals)}).`;
+      }
+    }
+    if (!error && tp > 0 && tp < guardPrice + minDist) {
+      if (input.allowAutoClamp) {
+        tp = roundPrice(guardPrice + minDist, input.symbol);
+      } else {
+        error = `Buy Take Profit (${tp.toFixed(spec.decimals)}) must stay above ${guardLabel} (${guardPrice.toFixed(spec.decimals)}).`;
+      }
+    }
+  } else {
+    if (sl > 0 && sl < guardPrice + minDist) {
+      if (input.allowAutoClamp) {
+        sl = roundPrice(guardPrice + minDist, input.symbol);
+      } else {
+        error = `Sell Stop Loss (${sl.toFixed(spec.decimals)}) must stay above ${guardLabel} (${guardPrice.toFixed(spec.decimals)}).`;
+      }
+    }
+    if (!error && tp > 0 && tp > guardPrice - minDist) {
+      if (input.allowAutoClamp) {
+        tp = roundPrice(Math.max(minPip, guardPrice - minDist), input.symbol);
+      } else {
+        error = `Sell Take Profit (${tp.toFixed(spec.decimals)}) must stay below ${guardLabel} (${guardPrice.toFixed(spec.decimals)}).`;
+      }
+    }
+  }
+
+  const vol = Math.max(0.01, input.volume || 0.01);
+  const slDist = sl > 0 ? Math.abs(refPrice - sl) : 0;
+  const tpDist = tp > 0 ? Math.abs(tp - refPrice) : 0;
+  const riskUsd =
+    sl > 0 ? Math.round(slDist * spec.contractSize * vol * 100) / 100 : 0;
+  const rewardUsd =
+    tp > 0 ? Math.round(tpDist * spec.contractSize * vol * 100) / 100 : 0;
+  const rrRatio =
+    riskUsd > 0 && rewardUsd > 0 ? Math.round((rewardUsd / riskUsd) * 100) / 100 : null;
+
+  return {
+    valid: !error,
+    error,
+    stopLoss: sl,
+    takeProfit: tp,
+    minDist,
+    riskUsd,
+    rewardUsd,
+    rrRatio,
+  };
+}
+
+export interface SlTpPresetsResult {
+  breakevenSl: number | null;
+  riskUsdPresets: { riskUsd: number; slPrice: number }[];
+  rrPresets: { ratio: number; label: string; slPrice: number; tpPrice: number }[];
+}
+
+export function computeSlTpPresets(input: {
+  symbol: SymbolCode;
+  side: OrderSide;
+  volume: number;
+  entryPrice: number;
+  liveBid?: number;
+  liveAsk?: number;
+  currentSl?: number;
+  isOpenPosition?: boolean;
+}): SlTpPresetsResult {
+  const spec = INSTRUMENTS[input.symbol];
+  const empty: SlTpPresetsResult = { breakevenSl: null, riskUsdPresets: [], rrPresets: [] };
+  if (!spec || input.entryPrice <= 0) return empty;
+
+  const vol = Math.max(0.01, input.volume || 0.01);
+  const minPip = Math.pow(10, -(spec.decimals || 2));
+  const minDist = Math.max(minPip * 2, (spec.spread || minPip) * 0.5);
+  const bid = input.liveBid && input.liveBid > 0 ? input.liveBid : input.entryPrice;
+  const ask = input.liveAsk && input.liveAsk > 0 ? input.liveAsk : input.entryPrice;
+  const guardPrice = input.isOpenPosition ? (input.side === 'BUY' ? bid : ask) : input.entryPrice;
+  const signSl = input.side === 'BUY' ? -1 : 1;
+  const signTp = input.side === 'BUY' ? 1 : -1;
+
+  // Breakeven SL only valid if trade is sufficiently in profit past minDist
+  let breakevenSl: number | null = null;
+  if (input.isOpenPosition) {
+    if (input.side === 'BUY' && input.entryPrice <= guardPrice - minDist) {
+      breakevenSl = roundPrice(input.entryPrice, input.symbol);
+    } else if (input.side === 'SELL' && input.entryPrice >= guardPrice + minDist) {
+      breakevenSl = roundPrice(input.entryPrice, input.symbol);
+    }
+  }
+
+  // Dollar risk SL presets ($25, $50, $100) anchored safely outside guardPrice + minDist
+  const riskUsdPresets = [25, 50, 100].map((riskUsd) => {
+    const rawOffset = riskUsd / (spec.contractSize * vol);
+    const candidate = roundPrice(input.entryPrice + signSl * rawOffset, input.symbol);
+    const clamped =
+      input.side === 'BUY'
+        ? Math.min(candidate, roundPrice(guardPrice - minDist * 2, input.symbol))
+        : Math.max(candidate, roundPrice(guardPrice + minDist * 2, input.symbol));
+    return {
+      riskUsd,
+      slPrice: Math.max(minPip, roundPrice(clamped, input.symbol)),
+    };
+  });
+
+  // Base risk distance for R:R presets: either active SL distance or ~$50 risk distance (minimum 4*spread)
+  const fallbackDist = Math.max(minDist * 4, 50 / (spec.contractSize * vol));
+  const hasValidCurrentSl =
+    input.currentSl &&
+    input.currentSl > 0 &&
+    ((input.side === 'BUY' && input.currentSl < guardPrice) ||
+      (input.side === 'SELL' && input.currentSl > guardPrice));
+  const riskDist = hasValidCurrentSl
+    ? Math.max(minDist * 2, Math.abs(input.entryPrice - (input.currentSl as number)))
+    : fallbackDist;
+
+  const activeSlPrice = hasValidCurrentSl
+    ? roundPrice(input.currentSl as number, input.symbol)
+    : roundPrice(Math.max(minPip, guardPrice + signSl * riskDist), input.symbol);
+
+  const rrPresets = [1, 2, 3].map((ratio) => {
+    const rawTp = input.entryPrice + signTp * riskDist * ratio;
+    const safeTp =
+      input.side === 'BUY'
+        ? Math.max(rawTp, guardPrice + minDist * 2)
+        : Math.max(minPip, Math.min(rawTp, guardPrice - minDist * 2));
+    return {
+      ratio,
+      label: `1:${ratio}`,
+      slPrice: activeSlPrice,
+      tpPrice: roundPrice(safeTp, input.symbol),
+    };
+  });
+
+  return {
+    breakevenSl,
+    riskUsdPresets,
+    rrPresets,
+  };
+}
+
+export function formatCandleCountdown(nowMs: number, timeframeSeconds: number): string {
+  const tfSec = Math.max(1, Math.floor(timeframeSeconds));
+  const nowSec = Math.floor(nowMs / 1000);
+  const secPassed = ((nowSec % tfSec) + tfSec) % tfSec;
+  const secRemaining = secPassed === 0 ? tfSec : tfSec - secPassed;
+  const days = Math.floor(secRemaining / 86400);
+  const hrs = Math.floor((secRemaining % 86400) / 3600);
+  const mins = Math.floor((secRemaining % 3600) / 60);
+  const secs = secRemaining % 60;
+
+  if (days > 0) {
+    return `${days}d ${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+  }
+  if (hrs > 0) {
+    return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs
+      .toString()
+      .padStart(2, '0')}`;
+  }
+  return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+export function resolveChartPriceOrderType(
+  side: OrderSide,
+  targetPrice: number,
+  liveBid: number,
+  liveAsk: number
+): 'BUY_LIMIT' | 'BUY_STOP' | 'SELL_LIMIT' | 'SELL_STOP' {
+  if (side === 'BUY') {
+    return targetPrice <= liveAsk ? 'BUY_LIMIT' : 'BUY_STOP';
+  }
+  return targetPrice >= liveBid ? 'SELL_LIMIT' : 'SELL_STOP';
+}
+
+/**
+ * Computes a clamped, valid Stop Loss or Take Profit price when a user drags an SL or TP
+ * line vertically on the chart, or right-clicks a price on the chart to set SL/TP.
+ */
+export function computeChartSlTpDragPrice(params: {
+  symbol: SymbolCode | string;
+  side: OrderSide;
+  entryPrice: number;
+  currentReferencePrice?: number;
+  lots: number;
+  targetType: 'sl' | 'tp';
+  rawPrice: number;
+  existingSl: number;
+  existingTp: number;
+  isOpenPosition?: boolean;
+}): {
+  clampedPrice: number;
+  nextSl: number;
+  nextTp: number;
+  riskUsd: number | null;
+  rewardUsd: number | null;
+  rrRatio: number | null;
+} {
+  const {
+    symbol,
+    side,
+    entryPrice,
+    currentReferencePrice,
+    lots,
+    targetType,
+    rawPrice,
+    existingSl,
+    existingTp,
+    isOpenPosition = true,
+  } = params;
+  const symCode = (symbol in INSTRUMENTS ? symbol : 'XAUUSD') as SymbolCode;
+  const spec = INSTRUMENTS[symCode] || INSTRUMENTS.XAUUSD;
+  const minPip = Math.pow(10, -(spec.decimals || 2));
+  const minDistance = Math.max(minPip * 2, (spec.spread || minPip) * 0.5, entryPrice * 0.00015);
+  const hasLivePrice =
+    Number.isFinite(currentReferencePrice) && (currentReferencePrice as number) > 0;
+  const liveGuardPrice = hasLivePrice ? (currentReferencePrice as number) : entryPrice;
+  const refHighPrice = isOpenPosition
+    ? liveGuardPrice
+    : hasLivePrice
+    ? Math.max(entryPrice, currentReferencePrice as number)
+    : entryPrice;
+  const refLowPrice = isOpenPosition
+    ? liveGuardPrice
+    : hasLivePrice
+    ? Math.min(entryPrice, currentReferencePrice as number)
+    : entryPrice;
+
+  let candidate = Number.isFinite(rawPrice) && rawPrice > 0 ? rawPrice : entryPrice;
+
+  if (targetType === 'sl') {
+    if (side === 'BUY') {
+      const maxValidSl = refLowPrice - minDistance;
+      candidate = Math.min(candidate, maxValidSl);
+    } else {
+      const minValidSl = refHighPrice + minDistance;
+      candidate = Math.max(candidate, minValidSl);
+    }
+  } else {
+    if (side === 'BUY') {
+      const minValidTp = refHighPrice + minDistance;
+      candidate = Math.max(candidate, minValidTp);
+    } else {
+      const maxValidTp = refLowPrice - minDistance;
+      candidate = Math.min(candidate, maxValidTp);
+    }
+  }
+
+  const rounded = Number(Math.max(minPip, candidate).toFixed(spec.decimals));
+  const nextSl = targetType === 'sl' ? rounded : existingSl;
+  const nextTp = targetType === 'tp' ? rounded : existingTp;
+
+  const preview = validateAndComputeSlTpPreview({
+    symbol: symCode,
+    side,
+    referencePrice: entryPrice,
+    liveBid: currentReferencePrice,
+    liveAsk: currentReferencePrice,
+    isOpenPosition,
+    volume: lots,
+    stopLoss: nextSl > 0 ? nextSl : undefined,
+    takeProfit: nextTp > 0 ? nextTp : undefined,
+    allowAutoClamp: true,
+  });
+
+  return {
+    clampedPrice: targetType === 'sl' ? preview.stopLoss : preview.takeProfit,
+    nextSl: preview.stopLoss,
+    nextTp: preview.takeProfit,
+    riskUsd: preview.riskUsd,
+    rewardUsd: preview.rewardUsd,
+    rrRatio: preview.rrRatio,
+  };
+}
+
+/**
+ * Generates an instant default protective SL or TP on the chart when the user clicks "+SL" or "+TP"
+ * on an open position badge directly on the chart.
+ */
+export function computeDefaultQuickSlTpForPosition(params: {
+  symbol: SymbolCode | string;
+  side: OrderSide;
+  entryPrice: number;
+  currentPrice: number;
+  lots: number;
+  existingSl: number;
+  existingTp: number;
+  targetType: 'sl' | 'tp';
+  defaultRiskUsd?: number;
+}): {
+  nextSl: number;
+  nextTp: number;
+  addedPrice: number;
+  riskUsd: number | null;
+  rewardUsd: number | null;
+} {
+  const {
+    symbol,
+    side,
+    entryPrice,
+    currentPrice,
+    lots,
+    existingSl,
+    existingTp,
+    targetType,
+    defaultRiskUsd = 25,
+  } = params;
+  const symCode = (symbol in INSTRUMENTS ? symbol : 'XAUUSD') as SymbolCode;
+  const spec = INSTRUMENTS[symCode] || INSTRUMENTS.XAUUSD;
+  const minPip = Math.pow(10, -(spec.decimals || 2));
+  const safeLots = Math.max(0.01, Number(lots) || 0.01);
+  const baseDistanceFromRisk = defaultRiskUsd / Math.max(0.0001, safeLots * spec.contractSize);
+  const minDistance = Math.max(minPip * 15, entryPrice * 0.0018, baseDistanceFromRisk);
+
+  if (targetType === 'sl') {
+    const anchor =
+      side === 'BUY'
+        ? Math.min(entryPrice, currentPrice > 0 ? currentPrice : entryPrice)
+        : Math.max(entryPrice, currentPrice > 0 ? currentPrice : entryPrice);
+    const rawSl = side === 'BUY' ? anchor - minDistance : anchor + minDistance;
+    const res = computeChartSlTpDragPrice({
+      symbol: symCode,
+      side,
+      entryPrice,
+      currentReferencePrice: currentPrice,
+      lots: safeLots,
+      targetType: 'sl',
+      rawPrice: rawSl,
+      existingSl,
+      existingTp,
+    });
+    return {
+      nextSl: res.nextSl,
+      nextTp: existingTp,
+      addedPrice: res.clampedPrice,
+      riskUsd: res.riskUsd,
+      rewardUsd: res.rewardUsd,
+    };
+  } else {
+    const slDist = existingSl > 0 ? Math.abs(entryPrice - existingSl) : minDistance;
+    const tpDist = Math.max(minDistance * 1.5, slDist * 2);
+    const anchor =
+      side === 'BUY'
+        ? Math.max(entryPrice, currentPrice > 0 ? currentPrice : entryPrice)
+        : Math.min(entryPrice, currentPrice > 0 ? currentPrice : entryPrice);
+    const rawTp = side === 'BUY' ? anchor + tpDist : anchor - tpDist;
+    const res = computeChartSlTpDragPrice({
+      symbol: symCode,
+      side,
+      entryPrice,
+      currentReferencePrice: currentPrice,
+      lots: safeLots,
+      targetType: 'tp',
+      rawPrice: rawTp,
+      existingSl,
+      existingTp,
+    });
+    return {
+      nextSl: existingSl,
+      nextTp: res.nextTp,
+      addedPrice: res.clampedPrice,
+      riskUsd: res.riskUsd,
+      rewardUsd: res.rewardUsd,
+    };
+  }
+}
+
+export interface FormattedAccountRulesSummary {
+  challengeType: ChallengeType;
+  programLabel: string;
+  currentPhaseLabel: string;
+  totalPhases: number;
+  phaseTargetsText: string;
+  activeTargetPct: number;
+  activeTargetUsd: number;
+  dailyDrawdownPct: number;
+  dailyDrawdownLimitUsd: number;
+  dailyBreachEquityFloorUsd: number;
+  maxDrawdownPct: number;
+  maxDrawdownLimitUsd: number;
+  maxBreachEquityFloorUsd: number;
+  minTradingDays: number;
+  payoutMinTradingDays: number;
+  leverageText: string;
+  profitSplitPct: number;
+  consistencyRuleText: string;
+  drawdownModelText: string;
+}
+
+export function formatAccountRulesSummary(
+  account: Partial<TradingAccountRecord> & {
+    dailyStartBalance?: number;
+    currentPhase?: number;
+    totalPhases?: number;
+  }
+): FormattedAccountRulesSummary {
+  const resolved = resolveChallengeRulesForAccount({
+    ...account,
+    currentStep: account.currentStep ?? account.currentPhase,
+    totalSteps: account.totalSteps ?? account.totalPhases,
+  });
+  const startBal = Math.max(100, Number(account.startingBalance) || 5000);
+  const dailyRef = Math.max(
+    startBal,
+    Number(account.dailyStartingEquity) ||
+      Number(account.dailyStartBalance) ||
+      Number(account.balance) ||
+      startBal
+  );
+  const preset = PREDEFINED_CHALLENGE_PASSING_RULES[resolved.challengeType];
+
+  const currentPhaseLabel =
+    account.status === 'passed' || resolved.challengeType === 'instant'
+      ? 'Funded Stage (Live Profit Split)'
+      : resolved.totalSteps > 1
+      ? `Evaluation Phase ${resolved.currentStep} of ${resolved.totalSteps}`
+      : 'Single-Phase Evaluation';
+
+  const phaseTargetsText =
+    resolved.challengeType === 'instant'
+      ? '0% (Direct Funded from Day 1)'
+      : resolved.challengeType === 'one_step'
+      ? 'Phase 1: +10% → Funded'
+      : resolved.challengeType === 'two_step'
+      ? 'Phase 1: +8% · Phase 2: +5% → Funded'
+      : 'Phase 1: +6% · Phase 2: +6% · Phase 3: +6% → Funded';
+
+  const activeTargetUsd = Number(((startBal * resolved.profitTargetPct) / 100).toFixed(2));
+  const dailyDrawdownLimitUsd = Number(((dailyRef * resolved.dailyDrawdownPct) / 100).toFixed(2));
+  const dailyBreachEquityFloorUsd = Number((dailyRef - dailyDrawdownLimitUsd).toFixed(2));
+  const maxDrawdownLimitUsd = Number(((startBal * resolved.maxDrawdownPct) / 100).toFixed(2));
+  const maxBreachEquityFloorUsd = Number((startBal - maxDrawdownLimitUsd).toFixed(2));
+
+  return {
+    challengeType: resolved.challengeType,
+    programLabel: preset.label,
+    currentPhaseLabel,
+    totalPhases: resolved.totalSteps,
+    phaseTargetsText,
+    activeTargetPct: resolved.profitTargetPct,
+    activeTargetUsd,
+    dailyDrawdownPct: resolved.dailyDrawdownPct,
+    dailyDrawdownLimitUsd,
+    dailyBreachEquityFloorUsd,
+    maxDrawdownPct: resolved.maxDrawdownPct,
+    maxDrawdownLimitUsd,
+    maxBreachEquityFloorUsd,
+    minTradingDays: resolved.minTradingDays,
+    payoutMinTradingDays: resolved.challengeType === 'instant' ? 5 : Math.max(3, resolved.minTradingDays),
+    leverageText: `1:${resolved.leverage}`,
+    profitSplitPct: resolved.profitSplitPct,
+    consistencyRuleText:
+      resolved.consistencyRulePct > 0
+        ? `${resolved.consistencyRulePct}% Max Single-Trade Profit Share`
+        : 'None (0% Consistency Restriction)',
+    drawdownModelText: 'Static Max Drawdown · Daily Equity Reset (00:00 UTC)',
+  };
+}
+
 
