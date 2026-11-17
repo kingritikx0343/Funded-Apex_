@@ -115,6 +115,20 @@ function mergeUserProfileRecords(existing, incoming) {
   const createdA = existing.createdAt ? Date.parse(existing.createdAt) : Number.MAX_SAFE_INTEGER;
   const createdB = incoming.createdAt ? Date.parse(incoming.createdAt) : Number.MAX_SAFE_INTEGER;
   const earliestCreatedAt = Number.isFinite(createdA) && Number.isFinite(createdB) ? createdA <= createdB ? existing.createdAt : incoming.createdAt : existing.createdAt || incoming.createdAt;
+  const existingPtsTs = typeof existing.pointsUpdatedAt === "number" ? existing.pointsUpdatedAt : 0;
+  const incomingPtsTs = typeof incoming.pointsUpdatedAt === "number" ? incoming.pointsUpdatedAt : 0;
+  let resolvedRewardPoints = Math.max(
+    Number(existing.rewardPoints || 0),
+    Number(incoming.rewardPoints || 0)
+  );
+  let resolvedPtsTs = Math.max(existingPtsTs, incomingPtsTs) || void 0;
+  if (incomingPtsTs > 0 && incomingPtsTs >= existingPtsTs && !incomingIsSeed) {
+    resolvedRewardPoints = Math.max(0, Number(incoming.rewardPoints ?? 0));
+    resolvedPtsTs = incomingPtsTs;
+  } else if (existingPtsTs > incomingPtsTs && !existingIsSeed) {
+    resolvedRewardPoints = Math.max(0, Number(existing.rewardPoints ?? 0));
+    resolvedPtsTs = existingPtsTs;
+  }
   return {
     ...existing,
     ...incoming,
@@ -123,8 +137,10 @@ function mergeUserProfileRecords(existing, incoming) {
     fullName: incoming.fullName && (!existing.fullName || !incomingIsSeed) ? incoming.fullName : existing.fullName || incoming.fullName,
     country: incomingCountry,
     referralCode: existing.referralCode || incoming.referralCode,
+    referredBy: incoming.referredBy || existing.referredBy,
     role: resolvedRole,
-    rewardPoints: Math.max(Number(existing.rewardPoints || 0), Number(incoming.rewardPoints || 0)),
+    rewardPoints: resolvedRewardPoints,
+    pointsUpdatedAt: resolvedPtsTs,
     lastSpinDate: incoming.lastSpinDate || existing.lastSpinDate,
     mfaEnabled: Boolean(existing.mfaEnabled || incoming.mfaEnabled),
     deletionRequested: Boolean(incoming.deletionRequested ?? existing.deletionRequested),
@@ -162,7 +178,7 @@ var INSTRUMENTS = {
     shortName: "GOLD",
     category: "Metals",
     tvSymbol: "OANDA:XAUUSD",
-    basePrice: 4094,
+    basePrice: 3880.07,
     spread: 0.45,
     decimals: 2,
     contractSize: 100,
@@ -175,7 +191,7 @@ var INSTRUMENTS = {
     shortName: "SILVER",
     category: "Metals",
     tvSymbol: "OANDA:XAGUSD",
-    basePrice: 53.25,
+    basePrice: 48.678,
     spread: 0.04,
     decimals: 3,
     contractSize: 5e3,
@@ -188,7 +204,7 @@ var INSTRUMENTS = {
     shortName: "CRUDE",
     category: "Commodities",
     tvSymbol: "FX:USOIL",
-    basePrice: 84.4,
+    basePrice: 88.56,
     spread: 0.04,
     decimals: 2,
     contractSize: 1e3,
@@ -201,7 +217,7 @@ var INSTRUMENTS = {
     shortName: "BRENT",
     category: "Commodities",
     tvSymbol: "FX:UKOIL",
-    basePrice: 88.2,
+    basePrice: 95.84,
     spread: 0.04,
     decimals: 2,
     contractSize: 1e3,
@@ -215,7 +231,7 @@ var INSTRUMENTS = {
     shortName: "EUR/USD",
     category: "Forex",
     tvSymbol: "FX:EURUSD",
-    basePrice: 1.1186,
+    basePrice: 1.10209,
     spread: 12e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -228,7 +244,7 @@ var INSTRUMENTS = {
     shortName: "GBP/USD",
     category: "Forex",
     tvSymbol: "FX:GBPUSD",
-    basePrice: 1.3416,
+    basePrice: 1.32107,
     spread: 15e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -241,7 +257,7 @@ var INSTRUMENTS = {
     shortName: "USD/JPY",
     category: "Forex",
     tvSymbol: "FX:USDJPY",
-    basePrice: 158.03,
+    basePrice: 159.711,
     spread: 0.014,
     decimals: 3,
     contractSize: 1e5,
@@ -254,7 +270,7 @@ var INSTRUMENTS = {
     shortName: "USD/CHF",
     category: "Forex",
     tvSymbol: "FX:USDCHF",
-    basePrice: 0.819,
+    basePrice: 0.839,
     spread: 14e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -267,7 +283,7 @@ var INSTRUMENTS = {
     shortName: "AUD/USD",
     category: "Forex",
     tvSymbol: "FX:AUDUSD",
-    basePrice: 0.6895,
+    basePrice: 0.67738,
     spread: 14e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -280,7 +296,7 @@ var INSTRUMENTS = {
     shortName: "USD/CAD",
     category: "Forex",
     tvSymbol: "FX:USDCAD",
-    basePrice: 1.4099,
+    basePrice: 1.42695,
     spread: 16e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -293,7 +309,7 @@ var INSTRUMENTS = {
     shortName: "NZD/USD",
     category: "Forex",
     tvSymbol: "FX:NZDUSD",
-    basePrice: 0.5611,
+    basePrice: 0.55215,
     spread: 18e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -306,7 +322,7 @@ var INSTRUMENTS = {
     shortName: "EUR/GBP",
     category: "Forex",
     tvSymbol: "FX:EURGBP",
-    basePrice: 0.8338,
+    basePrice: 0.83414,
     spread: 15e-5,
     decimals: 5,
     contractSize: 1e5,
@@ -319,7 +335,7 @@ var INSTRUMENTS = {
     shortName: "EUR/JPY",
     category: "Forex",
     tvSymbol: "FX:EURJPY",
-    basePrice: 176.79,
+    basePrice: 176.021,
     spread: 0.018,
     decimals: 3,
     contractSize: 1e5,
@@ -332,7 +348,7 @@ var INSTRUMENTS = {
     shortName: "GBP/JPY",
     category: "Forex",
     tvSymbol: "FX:GBPJPY",
-    basePrice: 212.02,
+    basePrice: 211.002,
     spread: 0.022,
     decimals: 3,
     contractSize: 1e5,
@@ -346,7 +362,7 @@ var INSTRUMENTS = {
     shortName: "NAS100",
     category: "Indices",
     tvSymbol: "FOREXCOM:NSXUSD",
-    basePrice: 28375,
+    basePrice: 28034.75,
     spread: 2.2,
     decimals: 2,
     contractSize: 10,
@@ -359,7 +375,7 @@ var INSTRUMENTS = {
     shortName: "US30",
     category: "Indices",
     tvSymbol: "FOREXCOM:DJI",
-    basePrice: 51525,
+    basePrice: 52418,
     spread: 3.8,
     decimals: 2,
     contractSize: 10,
@@ -372,7 +388,7 @@ var INSTRUMENTS = {
     shortName: "US500",
     category: "Indices",
     tvSymbol: "FOREXCOM:SPXUSD",
-    basePrice: 7212.25,
+    basePrice: 7583,
     spread: 0.8,
     decimals: 2,
     contractSize: 10,
@@ -385,7 +401,7 @@ var INSTRUMENTS = {
     shortName: "GER40",
     category: "Indices",
     tvSymbol: "FOREXCOM:GER40",
-    basePrice: 21450,
+    basePrice: 26749.95,
     spread: 1.5,
     decimals: 2,
     contractSize: 10,
@@ -398,7 +414,7 @@ var INSTRUMENTS = {
     shortName: "UK100",
     category: "Indices",
     tvSymbol: "FOREXCOM:UK100",
-    basePrice: 8840,
+    basePrice: 10902.56,
     spread: 1.2,
     decimals: 2,
     contractSize: 10,
@@ -412,7 +428,7 @@ var INSTRUMENTS = {
     shortName: "BTC/USD",
     category: "Crypto",
     tvSymbol: "BINANCE:BTCUSDT",
-    basePrice: 75870,
+    basePrice: 66725,
     spread: 18.5,
     decimals: 2,
     contractSize: 1,
@@ -425,7 +441,7 @@ var INSTRUMENTS = {
     shortName: "ETH/USD",
     category: "Crypto",
     tvSymbol: "BINANCE:ETHUSDT",
-    basePrice: 2105,
+    basePrice: 1892.8,
     spread: 1.2,
     decimals: 2,
     contractSize: 10,
@@ -438,7 +454,7 @@ var INSTRUMENTS = {
     shortName: "SOL/USD",
     category: "Crypto",
     tvSymbol: "BINANCE:SOLUSDT",
-    basePrice: 194.5,
+    basePrice: 75.45,
     spread: 0.25,
     decimals: 2,
     contractSize: 10,
@@ -451,7 +467,7 @@ var INSTRUMENTS = {
     shortName: "XRP/USD",
     category: "Crypto",
     tvSymbol: "BINANCE:XRPUSDT",
-    basePrice: 0.624,
+    basePrice: 0.9895,
     spread: 12e-4,
     decimals: 4,
     contractSize: 1e3,
@@ -464,7 +480,7 @@ var INSTRUMENTS = {
     shortName: "BNB/USD",
     category: "Crypto",
     tvSymbol: "BINANCE:BNBUSDT",
-    basePrice: 624,
+    basePrice: 611.1,
     spread: 0.4,
     decimals: 2,
     contractSize: 10,
@@ -472,6 +488,48 @@ var INSTRUMENTS = {
     volatility: 2.5
   }
 };
+function getMarketStatus(symbol, nowMs) {
+  const spec = INSTRUMENTS[symbol];
+  if (!spec) {
+    return {
+      isOpen: false,
+      sessionLabel: "CLOSED",
+      reason: `Unsupported instrument (${symbol}).`
+    };
+  }
+  if (spec.category === "Crypto") {
+    return {
+      isOpen: true,
+      sessionLabel: "24/7 LIVE",
+      reason: `${spec.shortName} Crypto spot market operates 24/7.`
+    };
+  }
+  if (typeof nowMs === "number") {
+    const d = new Date(nowMs);
+    const utcDay = d.getUTCDay();
+    const utcHour = d.getUTCHours();
+    const isWeekendClosed = utcDay === 6 || // Saturday all day
+    utcDay === 5 && utcHour >= 22 || // Friday after 22:00 UTC close
+    utcDay === 0 && utcHour < 22;
+    if (isWeekendClosed) {
+      return {
+        isOpen: false,
+        sessionLabel: "CLOSED",
+        reason: `Market Closed (Sat\u2013Sun Weekend): ${spec.shortName} execution is paused until Sunday 22:00 UTC.`
+      };
+    }
+  }
+  return {
+    isOpen: true,
+    sessionLabel: "LIVE",
+    reason: `${spec.shortName} institutional session is live.`
+  };
+}
+function roundPrice(price, symbol) {
+  const spec = INSTRUMENTS[symbol];
+  const factor = Math.pow(10, spec.decimals);
+  return Math.round(price * factor) / factor;
+}
 function calculateRequiredMargin(symbol, volume, entryPrice, leverage) {
   const spec = INSTRUMENTS[symbol];
   if (volume <= 0 || entryPrice <= 0 || leverage <= 0) return 0;
@@ -1005,6 +1063,12 @@ async function startServer() {
       const mergedPayouts = mergeById(existing.payouts, incomingPayouts, "id").filter(
         (p) => p?.id && !deletedPayoutSet.has(String(p.id))
       );
+      const incomingDeletedCouponIds = Array.isArray(incoming.deletedCouponIds) ? incoming.deletedCouponIds.map((id) => String(id)) : [];
+      const existingDeletedCouponIds = Array.isArray(existing.deletedCouponIds) ? existing.deletedCouponIds.map((id) => String(id)) : [];
+      const deletedCouponSet = new Set(
+        [...existingDeletedCouponIds, ...incomingDeletedCouponIds].filter(Boolean)
+      );
+      const mergedAdminCoupons = (incoming.replaceAdminCoupons && Array.isArray(incoming.adminCoupons) ? incoming.adminCoupons : mergeById(existing.adminCoupons, incoming.adminCoupons, "id")).filter((c) => c?.id && !deletedCouponSet.has(String(c.id)));
       const merged = {
         ...existing,
         ...incoming,
@@ -1013,7 +1077,8 @@ async function startServer() {
         orders: mergeById(existing.orders, incoming.orders, "id"),
         purchaseRequests: mergeById(existing.purchaseRequests, incomingPurchaseRequests, "id"),
         coupons: mergeById(existing.coupons, incoming.coupons, "id"),
-        adminCoupons: mergeById(existing.adminCoupons, incoming.adminCoupons, "id"),
+        adminCoupons: mergedAdminCoupons,
+        deletedCouponIds: Array.from(deletedCouponSet),
         payouts: mergedPayouts,
         deletedPayoutIds: Array.from(deletedPayoutSet),
         emailNotifications: mergeById(
@@ -1186,9 +1251,98 @@ async function startServer() {
   });
   let cachedQuotesResponse = null;
   let inFlightQuotesPromise = null;
+  let cachedYahooMeta = null;
+  let inFlightYahooMetaPromise = null;
+  const yahooMetaPairs = [
+    ["XAUUSD", "GC=F"],
+    ["XAGUSD", "SI=F"],
+    ["USOIL", "CL=F"],
+    ["UKOIL", "BZ=F"],
+    ["NAS100", "NQ=F"],
+    ["US30", "YM=F"],
+    ["US500", "ES=F"],
+    ["GER40", "^GDAXI"],
+    ["UK100", "^FTSE"],
+    ["EURUSD", "EURUSD=X"],
+    ["GBPUSD", "GBPUSD=X"],
+    ["USDJPY", "JPY=X"],
+    ["USDCHF", "CHF=X"],
+    ["AUDUSD", "AUDUSD=X"],
+    ["USDCAD", "CAD=X"],
+    ["NZDUSD", "NZDUSD=X"],
+    ["EURGBP", "EURGBP=X"],
+    ["EURJPY", "EURJPY=X"],
+    ["GBPJPY", "GBPJPY=X"],
+    ["BTCUSD", "BTC-USD"],
+    ["ETHUSD", "ETH-USD"],
+    ["SOLUSD", "SOL-USD"],
+    ["XRPUSD", "XRP-USD"],
+    ["BNBUSD", "BNB-USD"]
+  ];
+  const refreshYahooMetaInBackground = () => {
+    if (inFlightYahooMetaPromise) {
+      return inFlightYahooMetaPromise;
+    }
+    inFlightYahooMetaPromise = (async () => {
+      const nextMeta = { ...cachedYahooMeta?.data || {} };
+      await Promise.all(
+        yahooMetaPairs.map(async ([sym, ticker]) => {
+          try {
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 1600);
+            const r = await fetch(
+              `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
+                ticker
+              )}?interval=15m&range=5d`,
+              {
+                signal: ctrl.signal,
+                headers: { "User-Agent": "Mozilla/5.0" }
+              }
+            );
+            clearTimeout(timer);
+            if (!r.ok) return;
+            const j = await r.json();
+            const result = j?.chart?.result?.[0];
+            const meta = result?.meta;
+            const price = Number(meta?.regularMarketPrice);
+            if (!Number.isFinite(price) || price <= 0) return;
+            const prev = Number(meta?.chartPreviousClose || meta?.previousClose || price);
+            const change24hPct = prev > 0 ? Math.round((price - prev) / prev * 1e4) / 100 : 0;
+            const high24h = Number(meta?.regularMarketDayHigh) > 0 ? Number(meta.regularMarketDayHigh) : price;
+            const low24h = Number(meta?.regularMarketDayLow) > 0 ? Number(meta.regularMarketDayLow) : price;
+            nextMeta[sym] = {
+              price,
+              change24hPct,
+              high24h: Math.max(high24h, price),
+              low24h: Math.min(low24h, price)
+            };
+          } catch {
+          }
+        })
+      );
+      if (Object.keys(nextMeta).length > 0) {
+        cachedYahooMeta = { ts: Date.now(), data: nextMeta };
+      }
+      return nextMeta;
+    })().finally(() => {
+      inFlightYahooMetaPromise = null;
+    });
+    return inFlightYahooMetaPromise;
+  };
+  const fetchYahooMetaSnapshot = async () => {
+    const now = Date.now();
+    if (cachedYahooMeta) {
+      if (now - cachedYahooMeta.ts >= 1e4 && !inFlightYahooMetaPromise) {
+        void refreshYahooMetaInBackground();
+      }
+      return cachedYahooMeta.data;
+    }
+    return refreshYahooMetaInBackground();
+  };
+  void refreshYahooMetaInBackground();
   const fetchMarketQuotesSnapshot = async () => {
     const now = Date.now();
-    if (cachedQuotesResponse && now - cachedQuotesResponse.ts < 2200) {
+    if (cachedQuotesResponse && now - cachedQuotesResponse.ts < 1500) {
       return cachedQuotesResponse.payload;
     }
     if (inFlightQuotesPromise) {
@@ -1224,7 +1378,7 @@ async function startServer() {
         swissquotePairs.map(async ([sym, sqPath]) => {
           try {
             const ctrl = new AbortController();
-            const timer = setTimeout(() => ctrl.abort(), 2200);
+            const timer = setTimeout(() => ctrl.abort(), 1600);
             const r = await fetch(
               `https://forex-data-feed.swissquote.com/public-quotes/bboquotes/instrument/${sqPath}`,
               { signal: ctrl.signal, headers: { "User-Agent": "Mozilla/5.0" } }
@@ -1250,7 +1404,7 @@ async function startServer() {
       if (!spotQuotes.XAUUSD) {
         try {
           const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), 2e3);
+          const timer = setTimeout(() => ctrl.abort(), 1600);
           const r = await fetch("https://api.gold-api.com/price/XAU", { signal: ctrl.signal });
           clearTimeout(timer);
           if (r.ok) {
@@ -1268,7 +1422,7 @@ async function startServer() {
       for (const host of ["https://data-api.binance.vision", "https://api.binance.com"]) {
         try {
           const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), 2500);
+          const timer = setTimeout(() => ctrl.abort(), 1800);
           const r = await fetch(`${host}/api/v3/ticker/24hr?symbols=${symbolsParam}`, {
             signal: ctrl.signal
           });
@@ -1283,7 +1437,34 @@ async function startServer() {
       return [];
     };
     inFlightQuotesPromise = (async () => {
-      const [, tickers] = await Promise.all([fetchSwissquote(), fetchBinance()]);
+      const [, tickers, yahooMeta] = await Promise.all([
+        fetchSwissquote(),
+        fetchBinance(),
+        fetchYahooMetaSnapshot()
+      ]);
+      for (const [sym] of yahooMetaPairs) {
+        const ym = yahooMeta[sym];
+        const existingSq = spotQuotes[sym];
+        const spec = INSTRUMENTS[sym];
+        if (!spec) continue;
+        if (existingSq && existingSq.bid > 0) {
+          if (ym) {
+            existingSq.change24hPct = ym.change24hPct;
+            existingSq.high24h = roundPrice(Math.max(existingSq.bid, ym.high24h), sym);
+            existingSq.low24h = roundPrice(Math.min(existingSq.bid, ym.low24h), sym);
+          }
+        } else if (ym && ym.price > 0) {
+          const bid = roundPrice(ym.price, sym);
+          const ask = roundPrice(bid + spec.spread, sym);
+          spotQuotes[sym] = {
+            bid,
+            ask,
+            change24hPct: ym.change24hPct,
+            high24h: roundPrice(Math.max(bid, ym.high24h), sym),
+            low24h: roundPrice(Math.min(bid, ym.low24h), sym)
+          };
+        }
+      }
       const payload = {
         ok: tickers.length > 0 || Object.keys(spotQuotes).length > 0,
         tickers,
@@ -1309,6 +1490,35 @@ async function startServer() {
     }
   });
   const klinesCache = /* @__PURE__ */ new Map();
+  const aggregateParsedKlineBars = (bars, bucketSec) => {
+    const bucketMap = /* @__PURE__ */ new Map();
+    for (const bar of bars) {
+      const tsSec = Math.floor(bar[0] / 1e3);
+      const bucketStartMs = Math.floor(tsSec / bucketSec) * bucketSec * 1e3;
+      const o = parseFloat(bar[1]);
+      const h = parseFloat(bar[2]);
+      const l = parseFloat(bar[3]);
+      const c = parseFloat(bar[4]);
+      const v = parseFloat(bar[5]);
+      const existing = bucketMap.get(bucketStartMs);
+      if (!existing) {
+        bucketMap.set(bucketStartMs, [
+          bucketStartMs,
+          String(o),
+          String(h),
+          String(l),
+          String(c),
+          String(v)
+        ]);
+      } else {
+        existing[2] = String(Math.max(parseFloat(existing[2]), h));
+        existing[3] = String(Math.min(parseFloat(existing[3]), l));
+        existing[4] = String(c);
+        existing[5] = String(parseFloat(existing[5]) + v);
+      }
+    }
+    return Array.from(bucketMap.values());
+  };
   app.get("/api/market/klines", async (req, res) => {
     const rawSymbol = String(req.query.symbol || "XAUUSD").toUpperCase();
     const interval = String(req.query.interval || "15m");
@@ -1319,6 +1529,47 @@ async function startServer() {
       res.status(200).json(cachedKline.payload);
       return;
     }
+    const isDirectCrypto = ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "BNBUSD"].includes(rawSymbol);
+    if (isDirectCrypto) {
+      const binanceSymbolMap = {
+        BTCUSD: "BTCUSDT",
+        ETHUSD: "ETHUSDT",
+        SOLUSD: "SOLUSDT",
+        XRPUSD: "XRPUSDT",
+        BNBUSD: "BNBUSDT"
+      };
+      const binanceSymbol = binanceSymbolMap[rawSymbol] || rawSymbol;
+      const binanceInterval = interval === "1D" ? "1d" : interval === "1W" ? "1w" : interval;
+      for (const host of ["https://data-api.binance.vision", "https://api.binance.com"]) {
+        try {
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 2800);
+          const r = await fetch(
+            `${host}/api/v3/klines?symbol=${encodeURIComponent(
+              binanceSymbol
+            )}&interval=${encodeURIComponent(binanceInterval)}&limit=${limit}`,
+            { signal: ctrl.signal }
+          );
+          clearTimeout(timer);
+          if (r.ok) {
+            const data = await r.json();
+            if (Array.isArray(data) && data.length >= 15) {
+              const lastClose = Number(data[data.length - 1]?.[4]);
+              const payloadBin = {
+                ok: true,
+                klines: data,
+                source: "binance",
+                metaPrice: Number.isFinite(lastClose) && lastClose > 0 ? lastClose : void 0
+              };
+              klinesCache.set(cacheKey, { ts: Date.now(), payload: payloadBin });
+              res.status(200).json(payloadBin);
+              return;
+            }
+          }
+        } catch {
+        }
+      }
+    }
     const yahooSymbolMap = {
       XAUUSD: "GC=F",
       GOLD: "GC=F",
@@ -1326,6 +1577,7 @@ async function startServer() {
       XAGUSD: "SI=F",
       USOIL: "CL=F",
       UKOIL: "BZ=F",
+      NATGAS: "NG=F",
       EURUSD: "EURUSD=X",
       GBPUSD: "GBPUSD=X",
       USDJPY: "JPY=X",
@@ -1336,21 +1588,30 @@ async function startServer() {
       EURGBP: "EURGBP=X",
       EURJPY: "EURJPY=X",
       GBPJPY: "GBPJPY=X",
+      AUDJPY: "AUDJPY=X",
+      EURAUD: "EURAUD=X",
       NAS100: "NQ=F",
       US30: "YM=F",
       US500: "ES=F",
       GER40: "^GDAXI",
-      UK100: "^FTSE"
+      UK100: "^FTSE",
+      BTCUSD: "BTC-USD",
+      ETHUSD: "ETH-USD",
+      SOLUSD: "SOL-USD",
+      XRPUSD: "XRP-USD",
+      BNBUSD: "BNB-USD"
     };
     const yahooTicker = yahooSymbolMap[rawSymbol];
     if (yahooTicker) {
       try {
         const normInt = interval === "1M" ? "1mo" : interval.toLowerCase();
+        const is3m = normInt === "3m";
+        const is2h = normInt === "2h";
         const is4h = normInt === "4h";
-        const yfInterval = normInt === "1m" ? "1m" : normInt === "5m" ? "5m" : normInt === "15m" ? "15m" : normInt === "30m" ? "30m" : normInt === "1h" || is4h ? "60m" : normInt === "1w" ? "1wk" : normInt === "1mo" ? "1mo" : "1d";
-        const yfRange = normInt === "1m" ? "5d" : normInt === "5m" || normInt === "15m" || normInt === "30m" ? "1mo" : normInt === "1h" || is4h ? "6mo" : normInt === "1w" || normInt === "1mo" ? "5y" : "2y";
+        const yfInterval = normInt === "1s" || normInt === "1m" || is3m ? "1m" : normInt === "5m" ? "5m" : normInt === "15m" ? "15m" : normInt === "30m" ? "30m" : normInt === "1h" || is2h || is4h ? "60m" : normInt === "1w" ? "1wk" : normInt === "1mo" ? "1mo" : "1d";
+        const yfRange = normInt === "1s" || normInt === "1m" || is3m ? "5d" : normInt === "5m" || normInt === "15m" || normInt === "30m" ? "1mo" : normInt === "1h" || is2h || is4h ? "6mo" : normInt === "1w" || normInt === "1mo" ? "5y" : "2y";
         const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 3200);
+        const timer = setTimeout(() => ctrl.abort(), 3500);
         const yfRes = await fetch(
           `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
             yahooTicker
@@ -1364,6 +1625,8 @@ async function startServer() {
         if (yfRes.ok) {
           const yfJson = await yfRes.json();
           const result = yfJson?.chart?.result?.[0];
+          const metaPriceRaw = Number(result?.meta?.regularMarketPrice);
+          const metaPrice = Number.isFinite(metaPriceRaw) && metaPriceRaw > 0 ? metaPriceRaw : void 0;
           const timestamps = result?.timestamp || [];
           const quoteObj = result?.indicators?.quote?.[0] || {};
           const opens = quoteObj.open || [];
@@ -1391,7 +1654,24 @@ async function startServer() {
               String(v)
             ]);
           }
-          if (parsedBars.length >= 25) {
+          if (parsedBars.length >= 15) {
+            const normSym = rawSymbol === "GOLD" ? "XAUUSD" : rawSymbol;
+            const isOpenNow = getMarketStatus(normSym).isOpen;
+            const stepMap = {
+              "1s": 1,
+              "1m": 60,
+              "3m": 180,
+              "5m": 300,
+              "15m": 900,
+              "30m": 1800,
+              "1h": 3600,
+              "2h": 7200,
+              "4h": 14400,
+              "1d": 86400,
+              "1D": 86400
+            };
+            const stepSec = stepMap[interval] || stepMap[interval.toLowerCase()] || 0;
+            const stepMs = stepSec * 1e3;
             if (parsedBars.length >= 2) {
               const lastBar = parsedBars[parsedBars.length - 1];
               const prevBar = parsedBars[parsedBars.length - 2];
@@ -1399,57 +1679,67 @@ async function startServer() {
               const lastH = parseFloat(lastBar[2]);
               const lastL = parseFloat(lastBar[3]);
               const lastC = parseFloat(lastBar[4]);
+              const prevClose = parseFloat(prevBar[4]);
+              const lastBucket = stepMs > 0 ? Math.floor(Number(lastBar[0]) / stepMs) * stepMs : Number(lastBar[0]);
+              const prevBucket = stepMs > 0 ? Math.floor(Number(prevBar[0]) / stepMs) * stepMs : Number(prevBar[0]);
               if (lastO === lastH && lastH === lastL && lastL === lastC) {
-                prevBar[2] = String(Math.max(parseFloat(prevBar[2]), lastC));
-                prevBar[3] = String(Math.min(parseFloat(prevBar[3]), lastC));
+                if (lastBucket <= prevBucket) {
+                  prevBar[2] = String(Math.max(parseFloat(prevBar[2]), lastC));
+                  prevBar[3] = String(Math.min(parseFloat(prevBar[3]), lastC));
+                  prevBar[4] = String(lastC);
+                  parsedBars.pop();
+                } else if (Number.isFinite(prevClose) && prevClose > 0) {
+                  lastBar[0] = lastBucket;
+                  lastBar[1] = String(prevClose);
+                  lastBar[2] = String(Math.max(prevClose, lastC));
+                  lastBar[3] = String(Math.min(prevClose, lastC));
+                  lastBar[4] = String(lastC);
+                }
+              } else if (stepMs > 0 && lastBucket === prevBucket) {
+                prevBar[2] = String(Math.max(parseFloat(prevBar[2]), lastH));
+                prevBar[3] = String(Math.min(parseFloat(prevBar[3]), lastL));
                 prevBar[4] = String(lastC);
                 parsedBars.pop();
+              } else if (stepMs > 0 && Number(lastBar[0]) !== lastBucket) {
+                lastBar[0] = lastBucket;
               }
             }
-            if (is4h) {
-              const agg4h = [];
-              for (let i = 0; i < parsedBars.length; i += 4) {
-                const chunk = parsedBars.slice(i, i + 4);
-                if (chunk.length === 0) continue;
-                const open = chunk[0][1];
-                const close = chunk[chunk.length - 1][4];
-                const high = String(Math.max(...chunk.map((b) => parseFloat(b[2]))));
-                const low = String(Math.min(...chunk.map((b) => parseFloat(b[3]))));
-                const vol = String(chunk.reduce((s, b) => s + parseFloat(b[5]), 0));
-                agg4h.push([chunk[0][0], open, high, low, close, vol]);
-              }
-              const payload4h = { ok: true, klines: agg4h.slice(-limit), source: "yahoo" };
-              klinesCache.set(cacheKey, { ts: Date.now(), payload: payload4h });
-              res.status(200).json(payload4h);
-              return;
+            let finalBars = parsedBars;
+            if (is3m) {
+              finalBars = aggregateParsedKlineBars(parsedBars, 180);
+            } else if (is2h) {
+              finalBars = aggregateParsedKlineBars(parsedBars, 7200);
+            } else if (is4h) {
+              finalBars = aggregateParsedKlineBars(parsedBars, 14400);
             }
-            const payloadStd = { ok: true, klines: parsedBars.slice(-limit), source: "yahoo" };
+            if (isOpenNow && stepMs > 0 && finalBars.length > 0) {
+              const currentBucketMs = Math.floor(Date.now() / stepMs) * stepMs;
+              const lastBarMs = Number(finalBars[finalBars.length - 1][0]);
+              const lastBucketMs = Math.floor(lastBarMs / stepMs) * stepMs;
+              const deltaMs = currentBucketMs - lastBucketMs;
+              if (deltaMs > 0 && deltaMs <= 86400 * 1e3 * 3) {
+                finalBars = finalBars.map((b) => [
+                  Math.floor(Number(b[0]) / stepMs) * stepMs + deltaMs,
+                  b[1],
+                  b[2],
+                  b[3],
+                  b[4],
+                  b[5]
+                ]);
+              } else if (deltaMs === 0 && lastBarMs !== currentBucketMs) {
+                finalBars[finalBars.length - 1][0] = currentBucketMs;
+              }
+            }
+            const payloadStd = {
+              ok: true,
+              klines: finalBars.slice(-limit),
+              source: "yahoo",
+              metaPrice
+            };
             klinesCache.set(cacheKey, { ts: Date.now(), payload: payloadStd });
             res.status(200).json(payloadStd);
             return;
           }
-        }
-      } catch {
-      }
-    }
-    const binanceSymbol = rawSymbol === "XAUUSD" || rawSymbol === "GOLD" ? "PAXGUSDT" : rawSymbol === "BTCUSD" ? "BTCUSDT" : rawSymbol === "ETHUSD" ? "ETHUSDT" : rawSymbol === "SOLUSD" ? "SOLUSDT" : rawSymbol === "XRPUSD" ? "XRPUSDT" : rawSymbol === "BNBUSD" ? "BNBUSDT" : rawSymbol;
-    for (const host of ["https://data-api.binance.vision", "https://api.binance.com"]) {
-      try {
-        const ctrl = new AbortController();
-        const timer = setTimeout(() => ctrl.abort(), 3e3);
-        const r = await fetch(
-          `${host}/api/v3/klines?symbol=${encodeURIComponent(
-            binanceSymbol
-          )}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
-          { signal: ctrl.signal }
-        );
-        clearTimeout(timer);
-        if (r.ok) {
-          const data = await r.json();
-          const payloadBin = { ok: true, klines: data, source: "binance" };
-          klinesCache.set(cacheKey, { ts: Date.now(), payload: payloadBin });
-          res.status(200).json(payloadBin);
-          return;
         }
       } catch {
       }
@@ -1460,6 +1750,7 @@ async function startServer() {
   const ohlcWss = new import_ws.WebSocketServer({ noServer: true });
   const ohlcSubscribers = /* @__PURE__ */ new Map();
   const formingOhlcBars = /* @__PURE__ */ new Map();
+  const lastBroadcastPrices = /* @__PURE__ */ new Map();
   const resolveIntervalSeconds = (intervalRaw) => {
     const key = String(intervalRaw || "15m").trim();
     const map = {
@@ -1531,8 +1822,22 @@ async function startServer() {
     const bucketSec = Math.floor(nowSec / secStep) * secStep;
     const key = `${symbol}:${interval}`;
     const prev = formingOhlcBars.get(key);
+    const cachedKlineBar = resolveLatestBarFromKlineCache(symbol, interval);
+    const isCachedSameBasis = cachedKlineBar && Math.abs(cachedKlineBar.close - price) / Math.max(1e-9, price) < 15e-4;
     if (!prev || prev.time !== bucketSec) {
-      const seedOpen = prev ? prev.close : price;
+      if (cachedKlineBar && cachedKlineBar.time === bucketSec && isCachedSameBasis) {
+        const nextBar2 = {
+          time: bucketSec,
+          open: cachedKlineBar.open,
+          high: Math.max(cachedKlineBar.high, cachedKlineBar.open, price),
+          low: Math.min(cachedKlineBar.low, cachedKlineBar.open, price),
+          close: price,
+          volume: cachedKlineBar.volume
+        };
+        formingOhlcBars.set(key, nextBar2);
+        return nextBar2;
+      }
+      const seedOpen = prev ? prev.close : isCachedSameBasis && cachedKlineBar ? cachedKlineBar.close : price;
       const nextBar = {
         time: bucketSec,
         open: seedOpen,
@@ -1571,23 +1876,47 @@ async function startServer() {
         const serverTime = Date.now();
         ohlcSubscribers.forEach((sub, clientWs) => {
           if (clientWs.readyState !== import_ws.WebSocket.OPEN) return;
-          const price = resolvePriceFromSnapshot(sub.symbol, snapshot);
-          const bar = price && price > 0 ? buildAndUpdateFormingBar(sub.symbol, sub.interval, price) : resolveLatestBarFromKlineCache(sub.symbol, sub.interval);
+          const normSym = (sub.symbol === "GOLD" ? "XAUUSD" : sub.symbol).toUpperCase();
+          const marketStatus = getMarketStatus(normSym, serverTime);
+          const isMarketOpen = marketStatus.isOpen;
+          if (!isMarketOpen) {
+            const closedBar = resolveLatestBarFromKlineCache(sub.symbol, sub.interval);
+            clientWs.send(
+              JSON.stringify({
+                type: "ohlc",
+                symbol: sub.symbol,
+                interval: sub.interval,
+                bar: closedBar || void 0,
+                marketClosed: true,
+                source: "exchange-closed",
+                serverTime
+              })
+            );
+            return;
+          }
+          const realPrice = resolvePriceFromSnapshot(sub.symbol, snapshot);
+          const bar = realPrice && realPrice > 0 ? buildAndUpdateFormingBar(sub.symbol, sub.interval, realPrice) : resolveLatestBarFromKlineCache(sub.symbol, sub.interval);
           if (!bar) return;
+          const sigKey = `${sub.symbol}:${sub.interval}:${bar.time}:${bar.close}`;
+          if (lastBroadcastPrices.get(sigKey) === bar.close) {
+            return;
+          }
+          lastBroadcastPrices.set(sigKey, bar.close);
           clientWs.send(
             JSON.stringify({
               type: "ohlc",
               symbol: sub.symbol,
               interval: sub.interval,
               bar,
-              source: snapshot.spotQuotes?.[sub.symbol] ? "swissquote-spot-ws" : price ? "binance-ws" : "yahoo-kline-ws",
+              marketClosed: false,
+              source: snapshot.spotQuotes?.[sub.symbol] ? "swissquote-spot-ws" : "binance-ws",
               serverTime
             })
           );
         });
       } catch {
       }
-    }, 2e3);
+    }, 650);
   };
   httpServer.on("upgrade", (request, socket, head) => {
     try {
@@ -1616,6 +1945,8 @@ async function startServer() {
         if (msg?.type === "subscribe") {
           const symbol = String(msg.symbol || "XAUUSD").toUpperCase();
           const interval = String(msg.interval || "15m");
+          const normSym = (symbol === "GOLD" ? "XAUUSD" : symbol).toUpperCase();
+          const isMarketOpen = getMarketStatus(normSym).isOpen;
           ohlcSubscribers.set(ws, { symbol, interval });
           ensureOhlcBroadcastLoop();
           if (ws.readyState === import_ws.WebSocket.OPEN) {
@@ -1624,19 +1955,38 @@ async function startServer() {
                 type: "subscribed",
                 symbol,
                 interval,
+                marketClosed: !isMarketOpen,
                 serverTime: Date.now()
               })
             );
+            if (!isMarketOpen) {
+              const closedBar = resolveLatestBarFromKlineCache(symbol, interval);
+              if (closedBar && ws.readyState === import_ws.WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: "ohlc",
+                    symbol,
+                    interval,
+                    bar: closedBar,
+                    marketClosed: true,
+                    source: "exchange-closed",
+                    serverTime: Date.now()
+                  })
+                );
+              }
+              return;
+            }
             const snapshot = await fetchMarketQuotesSnapshot().catch(() => null);
-            const price = snapshot ? resolvePriceFromSnapshot(symbol, snapshot) : null;
-            if (price && price > 0 && ws.readyState === import_ws.WebSocket.OPEN) {
-              const bar = buildAndUpdateFormingBar(symbol, interval, price);
+            const realPrice = snapshot ? resolvePriceFromSnapshot(symbol, snapshot) : null;
+            if (realPrice && realPrice > 0 && ws.readyState === import_ws.WebSocket.OPEN) {
+              const bar = buildAndUpdateFormingBar(symbol, interval, realPrice);
               ws.send(
                 JSON.stringify({
                   type: "ohlc",
                   symbol,
                   interval,
                   bar,
+                  marketClosed: false,
                   source: snapshot?.spotQuotes?.[symbol] ? "swissquote-spot-ws" : "binance-ws",
                   serverTime: Date.now()
                 })

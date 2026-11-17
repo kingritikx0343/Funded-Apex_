@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { usePlatform } from '../context/PlatformContext';
 import {
   ACCOUNT_SIZES,
@@ -305,33 +305,23 @@ export const PublicPages: React.FC = () => {
     const ch = detailModalChallenge;
 
     return createPortal(
-      <AnimatePresence>
-        <motion.div
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="program-spec-title"
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="program-spec-title"
+        data-interactive-container
+        onClick={(e) => {
+          if (e.target === e.currentTarget) {
+            setDetailModalChallenge(null);
+          }
+        }}
+        className="apex-backdrop-enter fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-4 sm:p-6 overflow-y-auto"
+      >
+        <div
           data-interactive-container
-          style={{ willChange: 'opacity' }}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.12, ease: 'easeOut' }}
-          onClick={(e) => {
-            if (e.target === e.currentTarget) {
-              setDetailModalChallenge(null);
-            }
-          }}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-4 sm:p-6 overflow-y-auto"
+          style={{ transform: 'translate3d(0, 0, 0)' }}
+          className="apex-scale-in relative w-full max-w-xl max-h-[90vh] overflow-y-auto my-auto rounded-[24px] bg-[#071318] border border-[#00E5B0]/35 p-6 sm:p-7 space-y-5 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] custom-scrollbar"
         >
-          <motion.div
-            data-interactive-container
-            style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-            initial={{ opacity: 0, y: 6, scale: 0.99 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 4, scale: 0.99 }}
-            transition={{ duration: 0.12, ease: 'easeOut' }}
-            className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto my-auto rounded-[24px] bg-[#071318] border border-[#00E5B0]/35 p-6 sm:p-7 space-y-5 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] custom-scrollbar"
-          >
           <div className="flex items-start justify-between gap-4 border-b border-[#00E5B0]/20 pb-4">
             <div>
               <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#00E5B0]/12 border border-[#00E5B0]/30 text-[10px] font-mono font-bold uppercase tracking-wider text-[#00E5B0]">
@@ -430,9 +420,8 @@ export const PublicPages: React.FC = () => {
               Start Challenge — ${ch.priceUsd}
             </button>
           </div>
-        </motion.div>
-      </motion.div>
-    </AnimatePresence>,
+        </div>
+      </div>,
       document.body
     );
   };
@@ -662,18 +651,12 @@ export const PublicPages: React.FC = () => {
           </form>
 
           {/* Forgot Password Email Recovery Box — ONLY shown after user clicks "Forgot password?" */}
-          <AnimatePresence initial={false}>
-            {isLogin && showForgotBox && (
-              <motion.div
-                key="forgot-password-panel"
-                data-interactive-container
-                style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-                initial={{ opacity: 0, y: -6 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -6 }}
-                transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
-                className="pt-3 border-t border-white/10 space-y-2.5"
-              >
+          {isLogin && showForgotBox && (
+            <div
+              key="forgot-password-panel"
+              data-interactive-container
+              className="apex-fade-up pt-3 border-t border-white/10 space-y-2.5"
+            >
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-[#A3BDB8] flex items-center gap-1.5">
                     <Mail className="w-3.5 h-3.5 text-[#00E5B0]" />
@@ -707,9 +690,8 @@ export const PublicPages: React.FC = () => {
                     Send Reset Link
                   </button>
                 </form>
-              </motion.div>
-            )}
-          </AnimatePresence>
+            </div>
+          )}
 
           <div className="text-center text-xs text-[#A7B1AA] pt-1">
             {isLogin ? (
@@ -850,15 +832,10 @@ export const PublicPages: React.FC = () => {
           </div>
         </div>
 
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={selectedType}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -6 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
-          >
+        <div
+          key={selectedType}
+          className="apex-tab-enter grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6"
+        >
             {filteredList.map((ch) => (
               <div
                 key={ch.id}
@@ -946,8 +923,7 @@ export const PublicPages: React.FC = () => {
                 </div>
               </div>
             ))}
-          </motion.div>
-        </AnimatePresence>
+        </div>
       </main>
     );
   }
@@ -1571,14 +1547,9 @@ export const PublicPages: React.FC = () => {
             </div>
           </div>
 
-          <AnimatePresence mode="wait" initial={false}>
-          <motion.div
+          <div
             key={affiliateStoreType}
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -5 }}
-            transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"
+            className="apex-tab-enter grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"
           >
             {storeChallenges.map((ch) => {
               const ptCost = getChallengePointPrice(ch);
@@ -1695,8 +1666,7 @@ export const PublicPages: React.FC = () => {
                 </div>
               );
             })}
-          </motion.div>
-          </AnimatePresence>
+          </div>
         </section>
 
         {/* LINK PARTNER CODE + REFERRED TRADERS LEDGER */}
@@ -1818,19 +1788,25 @@ export const PublicPages: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {filteredFaq.map((item, idx) => (
-            <div
-              key={idx}
-              className="rounded-[14px] bg-[#090D0A] border border-[#00E676]/15 p-6 space-y-2.5"
-            >
-              <div className="text-[11px] font-mono font-bold uppercase text-[#00E676]">
-                {item.category}
-              </div>
-              <h3 className="text-base font-display font-bold text-[#FFFFFF]">{item.q}</h3>
-              <p className="text-sm text-[#A7B1AA] leading-relaxed">{item.a}</p>
+        <div className="apex-tab-enter grid grid-cols-1 md:grid-cols-2 gap-5">
+          {filteredFaq.length === 0 ? (
+            <div className="md:col-span-2 rounded-[14px] bg-[#090D0A] border border-[#00E676]/20 p-8 text-center text-sm text-[#A7B1AA]">
+              No matching FAQ entries found for "{faqQuery}".
             </div>
-          ))}
+          ) : (
+            filteredFaq.map((item, idx) => (
+              <div
+                key={idx}
+                className="rounded-[14px] bg-[#090D0A] hover:bg-[#0D130F] border border-[#00E676]/15 hover:border-[#00E676]/40 p-6 space-y-2.5 transition-all duration-200 hover:-translate-y-0.5 shadow-[0_12px_32px_rgba(0,0,0,0.55)]"
+              >
+                <div className="text-[11px] font-mono font-bold uppercase text-[#00E676]">
+                  {item.category}
+                </div>
+                <h3 className="text-base font-display font-bold text-[#FFFFFF]">{item.q}</h3>
+                <p className="text-sm text-[#A7B1AA] leading-relaxed">{item.a}</p>
+              </div>
+            ))
+          )}
         </div>
       </main>
     );
@@ -2231,15 +2207,10 @@ export const PublicPages: React.FC = () => {
                 </div>
               </div>
 
-              <AnimatePresence mode="wait" initial={false}>
-                <motion.div
-                  key={`${selectedType}-${selectedSize}-specs`}
-                  initial={{ opacity: 0, y: 6 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, y: -4 }}
-                  transition={{ duration: 0.16, ease: [0.16, 1, 0.3, 1] }}
-                  className="grid grid-cols-1 sm:grid-cols-2 gap-3.5"
-                >
+              <div
+                key={`${selectedType}-${selectedSize}-specs`}
+                className="apex-tab-enter grid grid-cols-1 sm:grid-cols-2 gap-3.5"
+              >
                   {[
                     {
                       label: selectedType === 'instant' ? 'Profit Target' : 'Phase 1 Profit Target',
@@ -2310,21 +2281,14 @@ export const PublicPages: React.FC = () => {
                       </span>
                     </div>
                   ))}
-                </motion.div>
-              </AnimatePresence>
+              </div>
             </div>
 
             {/* Right 5 Columns: Challenge Purchase Summary Card */}
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={selectedChallenge.id}
-                initial={{ opacity: 0, y: 8, scale: 0.99 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                exit={{ opacity: 0, y: -6, scale: 0.99 }}
-                transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
-                style={{ '--reveal-delay': '140ms' } as React.CSSProperties}
-                className="lg:col-span-5 rounded-[22px] bg-[#071318]/98 border border-[#00E5B0]/30 p-6 sm:p-7 space-y-6 shadow-[0_28px_80px_rgba(0,0,0,0.95)]"
-              >
+            <div
+              key={selectedChallenge.id}
+              className="apex-tab-enter lg:col-span-5 rounded-[22px] bg-[#071318]/98 border border-[#00E5B0]/30 p-6 sm:p-7 space-y-6 shadow-[0_28px_80px_rgba(0,0,0,0.95)]"
+            >
                 <div className="flex items-start justify-between gap-4 border-b border-[#00E5B0]/15 pb-5">
                   <div>
                     <div className="text-[11px] font-mono font-bold uppercase tracking-[0.14em] text-[#00E5B0]">
@@ -2378,8 +2342,7 @@ export const PublicPages: React.FC = () => {
                     View Full Program Specification
                   </button>
                 </div>
-              </motion.div>
-            </AnimatePresence>
+              </div>
           </div>
         </div>
       </section>

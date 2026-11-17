@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, memo } from 'react';
-import { AnimatePresence, MotionConfig, motion } from 'framer-motion';
+import { MotionConfig } from 'framer-motion';
 import { PlatformProvider, usePlatform } from './context/PlatformContext';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
@@ -97,82 +97,76 @@ const AnimatedToastPopup: React.FC = () => {
     };
   }, [toastMessage, clearToast]);
 
-  return (
-    <AnimatePresence mode="wait">
-      {toastMessage && (
-        <motion.div
-          key={toastMessage.id}
-          role="status"
-          aria-live="polite"
-          data-testid="global-toast-popup"
-          data-interactive-container
-          style={GPU_TRANSITION_STYLE}
-          initial={{ opacity: 0, y: 12, scale: 0.97 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 10, scale: 0.97 }}
-          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-          className={`fixed bottom-20 sm:bottom-16 right-3 sm:right-6 z-[10060] max-w-[calc(100vw-1.5rem)] sm:max-w-md w-auto bg-[#050806]/95 border ${
-            toastMessage.type === 'error'
-              ? 'border-red-500/45'
-              : toastMessage.type === 'warning'
-              ? 'border-amber-400/45'
-              : 'border-[#00E676]/35'
-          } shadow-[0_22px_55px_rgba(0,0,0,0.95)] rounded-[12px] p-3.5 sm:p-4 overflow-hidden`}
-        >
-          <div className="flex items-start gap-2.5 sm:gap-3">
-            <div className="mt-0.5 shrink-0">
-              {toastMessage.type === 'error' || toastMessage.type === 'warning' ? (
-                <AlertTriangle
-                  className={`w-4 h-4 ${
-                    toastMessage.type === 'error' ? 'text-red-400' : 'text-amber-400'
-                  }`}
-                />
-              ) : toastMessage.type === 'success' ? (
-                <CheckCircle2 className="w-4 h-4 text-[#00E676]" />
-              ) : (
-                <Info className="w-4 h-4 text-[#69F0AE]" />
-              )}
-            </div>
-            <div className="flex-1 min-w-0 space-y-1 pr-1">
-              <div
-                className={`text-xs font-display font-bold break-words ${
-                  toastMessage.type === 'error'
-                    ? 'text-red-400'
-                    : toastMessage.type === 'warning'
-                    ? 'text-amber-300'
-                    : 'text-[#00E676]'
-                }`}
-              >
-                {toastMessage.title}
-              </div>
-              <div className="text-xs text-[#FFFFFF] leading-relaxed break-words">
-                {toastMessage.message}
-              </div>
-            </div>
-            <button
-              type="button"
-              aria-label="Dismiss notification"
-              onClick={clearToast}
-              className="text-[#77837B] hover:text-[#FFFFFF] p-1 rounded-[7px] hover:bg-white/5 transition-colors cursor-pointer shrink-0"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
+  if (!toastMessage) return null;
 
-          <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[#0D130F] overflow-hidden">
-            <div
-              className={`h-full ${
-                toastMessage.type === 'error'
-                  ? 'bg-red-500'
-                  : toastMessage.type === 'warning'
-                  ? 'bg-amber-400'
-                  : 'bg-[#00E676]'
-              } apex-toast-countdown`}
+  return (
+    <div
+      key={toastMessage.id}
+      role="status"
+      aria-live="polite"
+      data-testid="global-toast-popup"
+      data-interactive-container
+      style={GPU_TRANSITION_STYLE}
+      className={`apex-sheet-up fixed bottom-20 sm:bottom-16 right-3 sm:right-6 z-[10060] max-w-[calc(100vw-1.5rem)] sm:max-w-md w-auto bg-[#050806]/95 border ${
+        toastMessage.type === 'error'
+          ? 'border-red-500/45'
+          : toastMessage.type === 'warning'
+          ? 'border-amber-400/45'
+          : 'border-[#00E676]/35'
+      } shadow-[0_22px_55px_rgba(0,0,0,0.95)] rounded-[12px] p-3.5 sm:p-4 overflow-hidden`}
+    >
+      <div className="flex items-start gap-2.5 sm:gap-3">
+        <div className="mt-0.5 shrink-0">
+          {toastMessage.type === 'error' || toastMessage.type === 'warning' ? (
+            <AlertTriangle
+              className={`w-4 h-4 ${
+                toastMessage.type === 'error' ? 'text-red-400' : 'text-amber-400'
+              }`}
             />
+          ) : toastMessage.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 text-[#00E676]" />
+          ) : (
+            <Info className="w-4 h-4 text-[#69F0AE]" />
+          )}
+        </div>
+        <div className="flex-1 min-w-0 space-y-1 pr-1">
+          <div
+            className={`text-xs font-display font-bold break-words ${
+              toastMessage.type === 'error'
+                ? 'text-red-400'
+                : toastMessage.type === 'warning'
+                ? 'text-amber-300'
+                : 'text-[#00E676]'
+            }`}
+          >
+            {toastMessage.title}
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+          <div className="text-xs text-[#FFFFFF] leading-relaxed break-words">
+            {toastMessage.message}
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-label="Dismiss notification"
+          onClick={clearToast}
+          className="text-[#77837B] hover:text-[#FFFFFF] p-1 rounded-[7px] hover:bg-white/5 transition-colors cursor-pointer shrink-0"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+
+      <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-[#0D130F] overflow-hidden">
+        <div
+          className={`h-full ${
+            toastMessage.type === 'error'
+              ? 'bg-red-500'
+              : toastMessage.type === 'warning'
+              ? 'bg-amber-400'
+              : 'bg-[#00E676]'
+          } apex-toast-countdown`}
+        />
+      </div>
+    </div>
   );
 };
 
@@ -219,34 +213,25 @@ const AppRouter: React.FC = () => {
         {/* Global 3-Second Animated Toast Notification Banner */}
         <AnimatedToastPopup />
 
-        <AnimatePresence mode="wait" initial={false}>
-          <motion.div
-            key={pageMotionKey}
-            style={GPU_TRANSITION_STYLE}
-            initial={{ opacity: 0, y: isTerminal ? 0 : 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: isTerminal ? 0 : -6 }}
-            transition={{
-              duration: isTerminal ? 0.14 : 0.22,
-              ease: [0.16, 1, 0.3, 1],
-            }}
-            className={
-              isTerminal
-                ? 'flex-1 w-full h-full relative z-10 flex flex-col'
-                : 'flex-1 relative z-10 apex-layout-transition'
-            }
-          >
-            {route === 'terminal' ? (
-              <MemoTradingTerminalView />
-            ) : route === 'dashboard' && user ? (
-              <MemoDashboardView />
-            ) : route === 'admin' && user ? (
-              <MemoAdminPanelView />
-            ) : (
-              <MemoPublicPages />
-            )}
-          </motion.div>
-        </AnimatePresence>
+        <div
+          key={pageMotionKey}
+          style={GPU_TRANSITION_STYLE}
+          className={
+            isTerminal
+              ? 'flex-1 w-full h-full relative z-10 flex flex-col'
+              : 'flex-1 relative z-10 apex-page-enter apex-layout-transition'
+          }
+        >
+          {route === 'terminal' ? (
+            <MemoTradingTerminalView />
+          ) : route === 'dashboard' && user ? (
+            <MemoDashboardView />
+          ) : route === 'admin' && user ? (
+            <MemoAdminPanelView />
+          ) : (
+            <MemoPublicPages />
+          )}
+        </div>
 
         {!isTerminal && !isDashboardOrAdmin && <MemoFooter />}
       </div>

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { AnimatePresence, motion } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { usePlatform } from '../context/PlatformContext';
 import {
   COUNTRIES,
@@ -618,33 +618,23 @@ export const StripeCheckoutModal: React.FC = () => {
   };
 
   return createPortal(
-    <AnimatePresence>
-      <motion.div
-        role="dialog"
-        aria-modal="true"
-        data-checkout-modal="true"
+    <div
+      role="dialog"
+      aria-modal="true"
+      data-checkout-modal="true"
+      data-interactive-container
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          closeStripeCheckout();
+        }
+      }}
+      className="apex-backdrop-enter fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-3 sm:p-4 overflow-y-auto"
+    >
+      <div
         data-interactive-container
-        style={{ willChange: 'opacity' }}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: 0.12, ease: 'easeOut' }}
-        onClick={(e) => {
-          if (e.target === e.currentTarget) {
-            closeStripeCheckout();
-          }
-        }}
-        className="fixed inset-0 z-[100] flex items-center justify-center bg-black/88 p-3 sm:p-4 overflow-y-auto"
+        style={{ transform: 'translate3d(0, 0, 0)' }}
+        className="apex-scale-in w-full max-w-lg max-h-[92dvh] flex flex-col rounded-[24px] bg-[#071318] border border-[#00E5B0]/35 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] overflow-hidden my-auto"
       >
-        <motion.div
-          data-interactive-container
-          style={{ willChange: 'transform, opacity', transform: 'translate3d(0, 0, 0)' }}
-          initial={{ opacity: 0, y: 6, scale: 0.99 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 4, scale: 0.99 }}
-          transition={{ duration: 0.12, ease: 'easeOut' }}
-          className="w-full max-w-lg max-h-[92dvh] flex flex-col rounded-[24px] bg-[#071318] border border-[#00E5B0]/35 shadow-[0_32px_95px_rgba(0,0,0,0.96),inset_0_1px_0_rgba(56,248,210,0.18)] overflow-hidden my-auto"
-        >
         {/* HEADER BAR — Compact 1-Line "Secure checkout" badge */}
         <div className="flex items-center justify-between gap-2 px-4 sm:px-5 py-3.5 border-b border-[#00E5B0]/18 bg-[#050E13] shrink-0">
           <div className="flex items-center gap-2 min-w-0 shrink">
@@ -730,16 +720,9 @@ export const StripeCheckoutModal: React.FC = () => {
           data-interactive-container
           className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-5 sm:p-6 space-y-5 custom-scrollbar"
         >
-          <AnimatePresence mode="wait">
           {/* 1. INITIAL LOADING STATE */}
           {step === 'INITIAL_LOADING' && (
-            <motion.div
-              key="INITIAL_LOADING"
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.14, ease: 'easeOut' }}
-            >
+            <div key="INITIAL_LOADING" className="apex-tab-enter">
               <CheckoutProcessingScreen
                 testId="checkout-step-loading"
                 title="Securing Your Checkout..."
@@ -752,19 +735,15 @@ export const StripeCheckoutModal: React.FC = () => {
                 durationMs={450}
                 icon="lock"
               />
-            </motion.div>
+            </div>
           )}
 
           {/* 2. CHOOSE PAYMENT METHOD SCREEN */}
           {step === 'CHOOSE_PAYMENT_METHOD' && (
-            <motion.div
+            <div
               key="CHOOSE_PAYMENT_METHOD"
               data-testid="checkout-step-method"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-              className="space-y-4"
+              className="apex-tab-enter space-y-4"
             >
               <div>
                 <h2 className="text-xl font-display font-extrabold text-white">
@@ -989,18 +968,12 @@ export const StripeCheckoutModal: React.FC = () => {
                   </button>
                 </div>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* 2B. PROCESSING METHOD -> NETWORK SELECTION */}
           {step === 'PROCESSING_METHOD' && (
-            <motion.div
-              key="PROCESSING_METHOD"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-            >
+            <div key="PROCESSING_METHOD" className="apex-tab-enter">
               <CheckoutProcessingScreen
                 testId="checkout-step-processing-method"
                 title="Processing Order & Payment Method..."
@@ -1013,19 +986,15 @@ export const StripeCheckoutModal: React.FC = () => {
                 durationMs={540}
                 icon="coins"
               />
-            </motion.div>
+            </div>
           )}
 
           {/* 3. SELECT COIN & NETWORK SCREEN */}
           {step === 'SELECT_COIN_NETWORK' && (
-            <motion.div
+            <div
               key="SELECT_COIN_NETWORK"
               data-testid="checkout-step-network"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-              className="space-y-4"
+              className="apex-tab-enter space-y-4"
             >
               <button
                 type="button"
@@ -1142,18 +1111,12 @@ export const StripeCheckoutModal: React.FC = () => {
                   </button>
                 </div>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* 4. PREPARING STRINGS / ADDRESS GENERATOR LOADER */}
           {step === 'PREPARING_STRINGS' && (
-            <motion.div
-              key="PREPARING_STRINGS"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-            >
+            <div key="PREPARING_STRINGS" className="apex-tab-enter">
               <CheckoutProcessingScreen
                 testId="checkout-step-preparing-address"
                 title="Generating Secure Deposit Address..."
@@ -1166,19 +1129,15 @@ export const StripeCheckoutModal: React.FC = () => {
                 durationMs={640}
                 icon="shield"
               />
-            </motion.div>
+            </div>
           )}
 
           {/* 5. SEND CRYPTO SCREEN */}
           {step === 'SEND_CRYPTO' && (
-            <motion.div
+            <div
               key="SEND_CRYPTO"
               data-testid="checkout-step-deposit"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-              className="space-y-4"
+              className="apex-tab-enter space-y-4"
             >
               <button
                 type="button"
@@ -1372,18 +1331,12 @@ export const StripeCheckoutModal: React.FC = () => {
                   Cancel payment
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {/* 6. VERIFYING DEPOSIT PROCESSING SCREEN */}
           {step === 'VERIFYING_DEPOSIT' && (
-            <motion.div
-              key="VERIFYING_DEPOSIT"
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.16, ease: 'easeOut' }}
-            >
+            <div key="VERIFYING_DEPOSIT" className="apex-tab-enter">
               <CheckoutProcessingScreen
                 testId="checkout-step-verifying"
                 title="Processing & Submitting Payment..."
@@ -1396,19 +1349,15 @@ export const StripeCheckoutModal: React.FC = () => {
                 durationMs={720}
                 icon="shield"
               />
-            </motion.div>
+            </div>
           )}
 
           {/* 7. CONFIRMED COMPLETION SCREEN */}
           {step === 'CONFIRMED' && (
-            <motion.div
+            <div
               key="CONFIRMED"
               data-testid="checkout-step-confirmed"
-              initial={{ opacity: 0, scale: 0.97, y: 8 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
-              className="py-4 space-y-5 text-center"
+              className="apex-scale-in py-4 space-y-5 text-center"
             >
               <div className="w-16 h-16 mx-auto rounded-full bg-[#00E5B0]/15 border-2 border-[#00E5B0] flex items-center justify-center shadow-[0_0_32px_rgba(0,229,176,0.28)]">
                 <CheckCircle2 className="w-8 h-8 text-[#00E5B0]" />
@@ -1477,13 +1426,11 @@ export const StripeCheckoutModal: React.FC = () => {
                   Done &amp; Close Checkout
                 </button>
               </div>
-            </motion.div>
+            </div>
           )}
-          </AnimatePresence>
         </div>
-        </motion.div>
-      </motion.div>
-    </AnimatePresence>,
+      </div>
+    </div>,
     document.body
   );
 };
